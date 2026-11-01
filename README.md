@@ -82,13 +82,13 @@ The **Approve** card at the top of Main shows two kinds of request, each with bu
 
 Agents can ask (`request_approval`) and check (`check_approval`), but no tool lets an agent approve. Only your page or your terminal can: `war-room approve --id a1 --yes`.
 
-**Letting the guard act on phone approvals is opt-in.** Set `"remoteApprovals": true` in `.warroom/config.json`. With it on, the guard handles a risky command this way:
+**The guard acts on phone approvals** (`"remoteApprovals": true` in `.warroom/config.json`, on by default). It handles a risky command this way:
 
 1. Instead of waiting at a terminal prompt nobody is watching, it blocks the command and files an approval request.
 2. Once you approve it, that **exact** command may run **once**, within 30 minutes.
 3. A changed command needs a new approval.
 
-With it off, which is the default, the guard asks at the terminal as before.
+Nothing is ever approved automatically: only a tap on Approve (confirmed once more on the page) or `war-room approve --yes` counts. Set `remoteApprovals` to `false` to go back to terminal-only prompts.
 
 ## The watcher: one alarm, no polling
 

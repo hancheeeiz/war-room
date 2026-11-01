@@ -245,10 +245,13 @@ test('approvals: page buttons, phone token, guard uses an exact approval once', 
   assert.ok(!names.some((n) => /^(approve|resolve|decide)_approval/.test(n)), 'agents must not be able to approve');
   const cfgFile = path.join(dir, '.warroom/config.json');
   const guard = (command) => JSON.parse(spawnSync('node', [CLI, 'hook-guard'], { cwd: dir, input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }), encoding: 'utf8', env: { ...process.env, WAR_ROOM_DIR: dir, WAR_ROOM_AGENT: 'deployer' } }).stdout).hookSpecificOutput;
-  // Off by default: the guard still asks at the terminal.
+  // Switched off: the guard asks at the terminal and files nothing.
+  const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  assert.equal(cfg.remoteApprovals, true, 'on by default (founder yes, 2026-11-01)');
+  fs.writeFileSync(cfgFile, JSON.stringify({ ...cfg, remoteApprovals: false }));
   assert.equal(guard('firebase deploy --only hosting').permissionDecision, 'ask');
-  // Opted in: no approval → deny + request created; approve on the page → allowed once, exact command only.
-  fs.writeFileSync(cfgFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfgFile, 'utf8')), remoteApprovals: true }));
+  // On: no approval → deny + request created; approve on the page → allowed once, exact command only.
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg));
   const first = guard('firebase deploy --only hosting');
   assert.equal(first.permissionDecision, 'deny');
   assert.match(first.permissionDecisionReason, /a1/);

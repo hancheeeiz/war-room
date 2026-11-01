@@ -32,7 +32,7 @@ export class Store {
       if (!fs.existsSync(f)) fs.writeFileSync(f, JSON.stringify(empty, null, 2));
     }
     const cfg = path.join(this.root, 'config.json');
-    if (!fs.existsSync(cfg)) fs.writeFileSync(cfg, JSON.stringify({ project, commander, staleHours: 2, dailyEventBudget: 300, created: now() }, null, 2));
+    if (!fs.existsSync(cfg)) fs.writeFileSync(cfg, JSON.stringify({ project, commander, staleHours: 2, dailyEventBudget: 300, remoteApprovals: true, created: now() }, null, 2));
     const gi = path.join(this.root, '.gitignore');
     if (!fs.existsSync(gi)) fs.writeFileSync(gi, 'lock\n*.tmp\n');
     return this.config();

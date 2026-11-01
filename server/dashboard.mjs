@@ -173,7 +173,6 @@ export function renderDashboard(store, { live = false } = {}) {
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>War room · ${esc(cfg.project)}</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
 <style>
 :root{--bg:#0e0d12;--surface:#17151d;--surface2:#201d29;--ink:#eeeaf6;--muted:#a09bb0;--line:#2d2938;--accent:#a184f2;--accent-ink:#130c26;--ok:#5ac38a;--warn:#e2a64f;--bad:#f2766c;--font:"Geist",system-ui,-apple-system,sans-serif;--mono:"Geist Mono",ui-monospace,Menlo,monospace;color-scheme:dark}
 *{box-sizing:border-box}

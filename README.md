@@ -90,6 +90,8 @@ Agents can ask (`request_approval`) and check (`check_approval`), but no tool le
 
 Nothing is ever approved automatically: only a tap on Approve (confirmed once more on the page) or `war-room approve --yes` counts. Set `remoteApprovals` to `false` to go back to terminal-only prompts.
 
+`notifyCommand` (any shell command, given the message as its argument, e.g. a push script) goes in `~/.config/war-room/config.json`.
+
 ## The watcher: one alarm, no polling
 
 The war room is event-driven — a finished task drops its report into the commander's inbox by itself, so nobody checks chats on a timer. The one exception is a chat that dies without reporting. For that, run the watcher:
@@ -98,7 +100,7 @@ The war room is event-driven — a finished task drops its report into the comma
 node /path/to/war-room/bin/war-room.mjs watch --every 60
 ```
 
-Hourly (default) it posts a deduped alert to the commander's inbox for any task claimed too long with no report (`staleHours` in `.warroom/config.json`). It also reacts **instantly** to war-room file changes — no 6-minute reply polling: set `notifyCommand` in `.warroom/config.json` to any shell command (a push script, `osascript` notification, …) and it runs with the message as its argument the moment something changes.
+Hourly (default) it posts a deduped alert to the commander's inbox for any task claimed too long with no report (`staleHours` in `.warroom/config.json`). It also reacts **instantly** to war-room file changes — no 6-minute reply polling: set `notifyCommand` in `~/.config/war-room/config.json` to any shell command (a push script, `osascript` notification, …) and it runs with the message as its argument the moment something changes.
 
 The founder can answer a queued question instantly from any terminal or phone bridge:
 
@@ -129,15 +131,24 @@ Plain JSON in `<project>/.warroom/`: `memory.json`, `goals.json`, `tasks.json`, 
 
 ## Security
 
-What the war room protects:
+What the war room protects (each one is a test in `test/`, written as the attack it stops):
+
+- **A downloaded project cannot hijack you.** Anything that runs a command (`notifyCommand`) or holds a secret (the phone link, the signing key) lives in `~/.config/war-room/`, never in a project. A planted `.warroom` folder cannot run code, fake an approval or plant a rule. `.warroom/` ignores itself in git by default.
+- **Your yes cannot be forged.** Approvals and confirmed rules are signed with a key that exists only on your computer. A copied, hand-edited or future-dated approval is ignored.
+- **Chats cannot write the rules.** A chat, or a web page or file a chat read, can only *propose* a rule. It reaches the other chats after you confirm it on the page, or with `war-room confirm-rules --yes` for rules you imported. Everything else in a chat's briefing is labelled as information, not instructions.
 
 - **No self-approval.** No tool lets an agent approve or answer for the founder. The guard blocks a chat that tries the CLI (`war-room approve` or `answer`) or edits `.warroom/` files by hand.
 - **The guard cannot be quietly switched off.** It also asks before a chat disables or uninstalls plugins, or edits Claude Code settings or hook files.
 - **Approvals are narrow.** Each approval covers one exact command, can be used once, and lapses after 30 minutes.
-- **The page is guarded.** It refuses non-localhost hosts (DNS rebinding) and non-JSON posts (cross-site forms), cannot be framed by another site (clickjacking), runs under a strict content policy, and sends no referrer. `serve --lan --new-link` replaces a link you think has leaked.
+- **The page is guarded.** It refuses non-localhost hosts (DNS rebinding) and non-JSON posts (cross-site forms), cannot be framed by another site (clickjacking), runs under a strict content policy, and sends no referrer. The phone link is new every time you start `serve --lan`, unless you pass `--keep-link`. The page loads nothing from other sites.
 - **Inputs are checked on the server.** Every tool's types, allowed values and required fields are enforced, whatever the client sends.
 - **No secrets in memory.** Memory refuses anything that looks like a password, key or card number.
 - **No dependencies at all.**
+
+Installing safely:
+
+- Install only from the official repository, and pin a released tag rather than a moving branch.
+- Anyone who can push to the repository can change the code every user runs, so maintainers keep two-factor sign-in on.
 
 Known limits, stated honestly:
 

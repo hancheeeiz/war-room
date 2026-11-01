@@ -1,19 +1,54 @@
 // War room store: plain JSON files in <project>/.warroom/, safe for several agents at once.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const FILES = { memory: [], goals: [], tasks: [], messages: [], approvals: [] };
 
 export const MEMORY_KINDS = ['rule', 'never', 'decision', 'pref', 'fact', 'problem', 'idea', 'question'];
 
+// Look upward for .warroom, but never above the home folder: a planted /tmp or /Users/.warroom must not be picked up.
 export function findRoot(start = process.env.WAR_ROOM_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd()) {
   let dir = path.resolve(start);
+  const home = os.homedir();
   for (;;) {
     if (fs.existsSync(path.join(dir, '.warroom'))) return path.join(dir, '.warroom');
     const up = path.dirname(dir);
-    if (up === dir) return path.join(path.resolve(start), '.warroom');
+    if (up === dir || dir === home) return path.join(path.resolve(start), '.warroom');
     dir = up;
   }
+}
+
+// Per-user secrets live outside every project, so a cloned or downloaded project can never carry them.
+export function userDir() {
+  const dir = process.env.WAR_ROOM_HOME || path.join(os.homedir(), '.config', 'war-room');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+function secretKey() {
+  const f = path.join(userDir(), 'secret');
+  if (!fs.existsSync(f)) {
+    try { fs.writeFileSync(f, crypto.randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' }); } catch (e) { if (e.code !== 'EEXIST') throw e; }
+  }
+  return fs.readFileSync(f, 'utf8').trim();
+}
+
+// Founder-only facts (approvals, confirmed rules) carry a signature made with the per-user key.
+// Files copied from elsewhere, or edited by hand, fail the check.
+export function sign(payload) {
+  return crypto.createHmac('sha256', secretKey()).update(payload).digest('hex');
+}
+
+export function verify(payload, sig) {
+  if (typeof sig !== 'string' || sig.length !== 64) return false;
+  return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(sign(payload)));
+}
+
+// Settings that run commands or open the phone page come from the user's own config, never from a project.
+export function userConfig() {
+  try { return JSON.parse(fs.readFileSync(path.join(userDir(), 'config.json'), 'utf8')); } catch { return {}; }
 }
 
 export class Store {
@@ -34,7 +69,7 @@ export class Store {
     const cfg = path.join(this.root, 'config.json');
     if (!fs.existsSync(cfg)) fs.writeFileSync(cfg, JSON.stringify({ project, commander, staleHours: 2, dailyEventBudget: 300, remoteApprovals: true, created: now() }, null, 2));
     const gi = path.join(this.root, '.gitignore');
-    if (!fs.existsSync(gi)) fs.writeFileSync(gi, 'lock\n*.tmp\n');
+    if (!fs.existsSync(gi)) fs.writeFileSync(gi, '# Project memory can hold private notes; commit it only on purpose.\n*\n');
     return this.config();
   }
 

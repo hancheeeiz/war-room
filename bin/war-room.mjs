@@ -2,8 +2,8 @@
 // War room CLI: init, status, brief, call, and the hooks (session-start briefing, founder-yes guard).
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
-import { Store, now } from '../server/store.mjs';
-import { autoRemember, brief, callTool, consumeApproval, requestApproval, resolveApproval } from '../server/tools.mjs';
+import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
+import { autoRemember, brief, callTool, consumeApproval, requestApproval, resolveApproval, ruleInForce } from '../server/tools.mjs';
 
 const [cmd, ...rest] = process.argv.slice(2);
 const flag = (name, dflt) => { const i = rest.indexOf(`--${name}`); return i >= 0 ? rest[i + 1] : dflt; };
@@ -65,10 +65,11 @@ function checkStale(store) {
   return posted;
 }
 
-// The founder's own notifier (e.g. a push script). Set "notifyCommand" in .warroom/config.json; it gets the message as one argument.
+// The founder's own notifier (e.g. a push script): "notifyCommand" in ~/.config/war-room/config.json, never in a
+// project, so a downloaded project cannot make the war room run its commands. It gets the message as one argument.
 function notify(store, message) {
   console.error(`${now()} ${message}`);
-  const cmd = store.config().notifyCommand;
+  const cmd = userConfig().notifyCommand;
   if (cmd) execFile('/bin/sh', ['-c', `${cmd} "$1"`, 'warroom-notify', message], () => {});
 }
 
@@ -122,12 +123,10 @@ switch (cmd) {
     const { renderDashboard } = await import('../server/dashboard.mjs');
     const port = Number(flag('port', 4818));
     const lan = rest.includes('--lan');
-    let token = store.config().lanToken;
-    if (lan && (!token || rest.includes('--new-link'))) {
-      token = crypto.randomBytes(18).toString('base64url');
-      const cfgFile = `${store.root}/config.json`;
-      fs.writeFileSync(cfgFile, JSON.stringify({ ...store.config(), lanToken: token }, null, 2));
-    }
+    // A fresh secret link on every start; --keep-link reuses the last one (kept in the user folder, never the project).
+    const keepFile = `${userDir()}/lan-link`;
+    let token = rest.includes('--keep-link') && fs.existsSync(keepFile) ? fs.readFileSync(keepFile, 'utf8').trim() : crypto.randomBytes(24).toString('base64url');
+    if (lan) fs.writeFileSync(keepFile, token, { mode: 0o600 });
     const tokenOk = (got) => !lan || (typeof got === 'string' && got.length === token.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(token)));
     const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
       + (fs.existsSync(`${store.root}/log.jsonl`) ? fs.statSync(`${store.root}/log.jsonl`).mtimeMs : 0);
@@ -158,7 +157,7 @@ switch (cmd) {
       if (req.method === 'POST' && origin && origin !== `http://${req.headers.host}`) return json(res, 403, { error: 'Cross-site request refused.' });
       if (req.method === 'GET' && url.pathname === '/api/version') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(version()); }
       if (req.method === 'GET' && url.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff',
-        'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" }); return res.end(renderDashboard(store, { live: true })); }
+        'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" }); return res.end(renderDashboard(store, { live: true })); }
       if (req.method === 'POST' && actions[url.pathname]) {
         let body = '';
         req.on('data', (d) => { body += d; if (body.length > 20000) req.destroy(); });
@@ -187,6 +186,19 @@ switch (cmd) {
     if (!store.exists()) { console.log('No war room here.'); break; }
     const n = checkStale(store);
     console.log(n ? `${n} stale task alert(s) posted to the commander's inbox.` : 'No stale tasks.');
+    break;
+  }
+  case 'confirm-rules': {
+    // The founder signs rules that came from elsewhere (an import, an older war room) so they take effect here.
+    const pending = store.read('memory').filter((m) => ['rule', 'never'].includes(m.kind) && ['active', 'proposed'].includes(m.status) && !ruleInForce(m));
+    if (!pending.length) { console.log('All rules are confirmed.'); break; }
+    for (const m of pending) console.log(`  ${m.id} [${m.kind}] ${m.text}`);
+    if (!rest.includes('--yes')) { console.log(`\n${pending.length} rule(s) are not in force. Read them, then run: war-room confirm-rules --yes`); break; }
+    store.update('memory', (memory) => {
+      for (const m of memory) if (pending.some((p) => p.id === m.id)) Object.assign(m, { status: 'active', confirmedBy: 'founder (cli)', sig: sign(`rule|${m.id}|${m.kind}|${m.text}`) });
+    });
+    store.log({ agent: 'founder (cli)', event: 'rules_confirmed', count: pending.length });
+    console.log(`${pending.length} rule(s) confirmed and now shown to every chat.`);
     break;
   }
   case 'approve': {
@@ -257,5 +269,5 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('war-room init [--project NAME] [--commander NAME] | status | dashboard | serve [--port 4818] [--lan] [--new-link] | approve --id A --yes|--no | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
+    console.log('war-room init [--project NAME] [--commander NAME] | status | dashboard | serve [--port 4818] [--lan] [--keep-link] | confirm-rules [--yes] | approve --id A --yes|--no | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
 }

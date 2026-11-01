@@ -45,7 +45,7 @@ node /path/to/war-room/bin/war-room.mjs rules --off s6 --yes  # switch one off o
 node /path/to/war-room/bin/war-room.mjs rules --on s6 --yes
 ```
 
-They live in the plugin's code, so a downloaded project cannot change or remove them, and the on/off choice is kept in `~/.config/war-room/config.json`. Your own rules come from the commander (`remember`, kind `rule` or `never`) and take effect once you approve them on the page.
+They live in the plugin's code, so a downloaded project cannot change or remove them, and the on/off choice is kept in `~/.config/war-room/config.json`. **Add your own rules any time:** say "new rule: …" to the commander. Your own rules come from the commander (`remember`, kind `rule` or `never`) and take effect once you approve them on the page.
 
 ## Connect other agents
 

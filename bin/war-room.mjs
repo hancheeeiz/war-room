@@ -208,7 +208,8 @@ switch (cmd) {
     const mine = store.exists() ? store.read('memory').filter(ruleInForce) : [];
     console.log(`\nYour confirmed rules here: ${mine.length}`);
     for (const m of mine) console.log(`  ${m.id} [${m.kind}] ${m.text}`);
-    console.log('\nSwitch a starter rule off: war-room rules --off s3 --yes · back on: --on s3 --yes');
+    console.log('\nAdd your own rule: tell the commander "new rule: …" in chat, then tap Approve on the page.');
+    console.log('Switch a starter rule off: war-room rules --off s3 --yes · back on: --on s3 --yes');
     break;
   }
   case 'confirm-rules': {

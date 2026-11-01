@@ -155,7 +155,7 @@ export function renderDashboard(store, { live = false } = {}) {
     <div class="regions">${regions}</div>
     ${problemMap ? `<h2 style="margin-top:16px">Problems by chat</h2><div class="party">${problemMap}</div>` : ''}
     <div style="margin-top:14px">${memCards || '<p class="note">Empty.</p>'}</div>
-    <details class="mem" id="mem-starter"><summary>Starter rules (built in) <span class="meta">${starterRules().length}</span></summary>${starterRules().map((r) => `<div class="item"><div class="plain">${esc(r.text)}</div><div class="meta">${esc(r.id)} · built in</div></div>`).join('')}</details></section>`;
+    <details class="mem" id="mem-starter"><summary>Starter rules (built in) <span class="meta">${starterRules().length}</span></summary>${starterRules().map((r) => `<div class="item"><div class="plain">${esc(r.text)}</div><div class="meta">${esc(r.id)} · built in</div></div>`).join('')}<p class="note">Add your own rule: tell the commander "new rule: …" in chat, then tap Approve here. Switch a built-in one off: <code>war-room rules --off s3 --yes</code></p></details></section>`;
   const msgRows = messages.filter((m) => m.open).reverse().map((m) => `<div class="item"><div class="plain"><span class="tag">${esc(m.kind)}</span>${esc(m.text)}</div><div class="meta">#${m.id} · ${esc(m.from)} → ${esc(m.to)} · ${esc(m.date)}</div></div>`);
   const logRows = log.map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`);
 

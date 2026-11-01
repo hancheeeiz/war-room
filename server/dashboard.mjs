@@ -133,6 +133,7 @@ export function renderDashboard(store, { live = false } = {}) {
   const goalCards = goals.map((g) => `<section class="card"><h2>${g === main ? 'Main goal' : 'Goal'} · ${esc(g.status)}</h2>
     <div class="goal">${esc(g.title)}</div>
     ${g.verdict ? `<p class="note">Judged: ${esc(g.verdict.recommendation)} — ${esc(g.verdict.reason)}</p>` : ''}
+    ${g.improved ? `<p class="note">Chosen improved version: ${esc(g.improved)}</p>` : ''}
     ${(g.milestones || []).map((m, i) => `<details class="ms"><summary><span class="tag">L${i + 1}</span>${esc(m.title)} <span class="meta">${m.checks.filter((c) => c.verified).length}/${m.checks.length}</span></summary>
       <p class="note">Win: ${esc(m.win)}</p><ul class="checks">${m.checks.map((c) => `<li class="${c.verified ? 'ok' : ''}">${c.verified ? '✓' : '○'} ${esc(c.text)}${c.evidence ? ` <span class="meta">— ${esc(c.evidence)}</span>` : ''}</li>`).join('')}</ul></details>`).join('')}
   </section>`).join('');

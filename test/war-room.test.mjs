@@ -86,7 +86,8 @@ test('goal flow: intake, judge, founder choice, plan, task, verify moves the bar
   assert.match((await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' })).error, /Judge the goal/);
   await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'users asked', cost: '1 day', risks: 'contrast bugs', strongerVersion: 'Dark mode that follows the system setting', founderMayNotSee: ['images need dark variants'], aiMayNotSee: ['brand colours may be fixed'], recommendation: 'improve', reason: 'small change, better default' });
   const d = await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'improve', founderWords: 'yes the better one' });
-  assert.equal(d.json.title, 'Dark mode that follows the system setting');
+  assert.equal(d.json.improved, 'Dark mode that follows the system setting');
+  assert.doesNotMatch(d.json.title, /follows the system/, 'the short goal title stays');
   await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Tokens', win: 'all colours are tokens', checks: ['no hex colours in components', 'dark tokens defined'] }] });
   const t1 = await c.call('create_task', { agent: 'commander', goalId: 'g1', checkId: 'g1.m1.c2', title: 'Define dark tokens', assignTo: 'frontend', files: ['src/styles/'], doneCheck: 'grep shows dark tokens', model: 'cheap' });
   assert.equal(t1.json.task.id, 't1');

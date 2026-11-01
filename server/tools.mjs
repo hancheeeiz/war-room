@@ -25,7 +25,7 @@ export function autoRemember(store, { kind, text, source, tags = [] }) {
   return store.update('memory', (memory) => {
     const item = { id: nextId(memory, 'm'), kind, text, date: now(), source, tags, status: 'active' };
     memory.push(item);
-    store.log({ agent: source, event: kind === 'idea' ? 'new_idea' : 'problem', id: item.id, text });
+    store.log({ agent: source, event: { idea: 'new_idea', todo: 'new_todo' }[kind] || 'problem', id: item.id, text });
     return item;
   });
 }
@@ -114,6 +114,7 @@ function progress(goal, tasks) {
   });
   return {
     goal: goal.id,
+    id: goal.id,
     title: goal.title,
     status: goal.status,
     percent: checks.length ? Math.round((verified / checks.length) * 100) : 0,
@@ -184,7 +185,7 @@ function packetText(t, goals, memory) {
   const extra = relevantMemory(memory, `${t.title} ${t.doneCheck} ${(t.tags || []).join(' ')}`, 6 - rules.length);
   return [
     `### ${t.id} · ${t.title} [${t.status}]`,
-    g ? `Goal: ${g.title}` : null,
+    g ? `Goal: ${g.title}${g.improved ? ` (chosen plan: ${g.improved})` : ''}` : null,
     t.files?.length ? `You may change only: ${t.files.join(', ')}` : t.area ? `Area: ${t.area}` : null,
     `Done means: ${t.doneCheck}`,
     t.rejectNote ? `Commander rejected the last report: ${t.rejectNote}` : null,
@@ -409,7 +410,7 @@ export const TOOLS = [
         const g = goals.find((x) => x.id === a.goalId);
         if (!g) throw new Refused(`No goal ${a.goalId}.`);
         if (g.status !== 'judged') throw new Refused('Judge the goal (judge_goal) before the founder decides.');
-        if (a.choice === 'improve' && g.verdict?.strongerVersion && g.verdict.strongerVersion !== 'none') g.title = g.verdict.strongerVersion;
+        if (a.choice === 'improve' && g.verdict?.strongerVersion && g.verdict.strongerVersion !== 'none') g.improved = g.verdict.strongerVersion;
         g.status = { keep: 'approved', improve: 'approved', later: 'later', drop: 'dropped' }[a.choice];
         g.decision = { choice: a.choice, founderWords: a.founderWords, date: now() };
         store.log({ agent: a.agent, event: 'decide_goal', id: g.id, choice: a.choice });

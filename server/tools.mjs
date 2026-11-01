@@ -76,7 +76,7 @@ function staleTasks(store, tasks) {
 }
 
 function todayEvents(store) {
-  const counts = {};
+  const counts = Object.create(null);
   for (const e of store.readLog(100000)) if (e.at?.startsWith(today()) && e.agent) counts[e.agent] = (counts[e.agent] || 0) + 1;
   return counts;
 }
@@ -185,7 +185,7 @@ export const TOOLS = [
     run: (store) => {
       const tasks = store.read('tasks');
       const goals = store.read('goals').filter((g) => g.status !== 'dropped');
-      const agents = {};
+      const agents = Object.create(null);
       for (const t of tasks.filter((x) => x.status !== 'verified')) (agents[t.agent || 'unassigned'] ||= []).push(`${t.id} ${t.title} [${t.status}]`);
       return { goals: goals.map((g) => progress(g, tasks)), agents, log: store.readLog(10) };
     },

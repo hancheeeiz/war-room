@@ -13,6 +13,8 @@ const store = new Store();
 const FOUNDER_YES = [
   [/\bgit\b[^|;&\n]*?\bpush\b/, 'git push'],
   // An agent must never answer for the founder or rewrite the war room's approvals and settings.
+  // Switching the guard itself off is a founder decision too.
+  [/\bclaude\s+(plugin|plugins|mcp)\s+(disable|uninstall|remove|rm)\b|\.claude\/(settings[^\s/]*\.json|plugins\/)|hooks\/hooks\.json/, 'switching off or changing the safety guard'],
   [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer)\b|\.warroom\/(approvals|config|memory|goals)\.json/, 'approving, answering for the founder, or changing war-room settings'],
   [/\b(firebase|vercel|netlify|fly|wrangler|eas|amplify)\b[^|;&]*\b(deploy|publish|submit)\b|--prod\b/, 'deploy'],
   [/\b(npm|pnpm|yarn)\s+publish\b|\bgh\s+release\s+create\b|\bgh\s+repo\s+create\b/, 'publishing'],
@@ -34,6 +36,7 @@ function founderYesReason(input) {
   }
   if (['Write', 'Edit', 'MultiEdit'].includes(name) && /(^|\/)\.env(\.|$)|\.(pem|p8|p12|key)$/.test(ti.file_path || '')) return 'passwords or keys (secret file)';
   if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(name) && /(^|\/)\.warroom\//.test(ti.file_path || ti.notebook_path || '')) return 'editing war-room approvals, memory or settings by hand';
+  if (['Write', 'Edit', 'MultiEdit'].includes(name) && /(^|\/)\.claude\/(settings[^/]*\.json|plugins\/)|(^|\/)hooks\/hooks\.json$/.test(ti.file_path || '')) return 'switching off or changing the safety guard';
   if (name.startsWith('mcp__') && !name.includes('war-room') && RISKY_TOOL.test(name.split('__').pop())) return 'an outside action (send, delete, publish or pay)';
   return null;
 }

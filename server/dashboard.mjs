@@ -142,7 +142,7 @@ export function renderDashboard(store, { live = false } = {}) {
   const row = (m) => `<div class="item"><div class="plain">${esc(m.text)}</div><div class="meta">${esc(m.id)} · ${esc(m.date)} · ${esc(m.source || '')}</div></div>`;
   const regions = kinds.map(([k, label, tone]) => `<a class="region t-${tone}" href="#mem-${k}"><b>${active.filter((m) => m.kind === k).length}</b><span>${label}</span></a>`).join('');
   const problems = active.filter((m) => m.kind === 'problem');
-  const bySource = {};
+  const bySource = Object.create(null);
   for (const p of problems) (bySource[p.source || 'unknown'] ||= []).push(p);
   const problemMap = Object.entries(bySource).map(([src, ps]) => `<div class="hud-card"><div class="hud-who"><span class="dot bad"></span>${esc(src)}<small>${ps.length}</small></div><div class="hud-last">${esc(ps[ps.length - 1].text.slice(0, 110))}</div></div>`).join('');
   const memCards = kinds.map(([k, label]) => {
@@ -170,7 +170,7 @@ export function renderDashboard(store, { live = false } = {}) {
     reports.length ? `<span class="pill">${reports.length} to check</span>` : '',
   ].join('');
 
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>War room · ${esc(cfg.project)}</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
 <style>

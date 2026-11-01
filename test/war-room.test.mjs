@@ -283,6 +283,9 @@ test('security: no self-approval, no tampering, no rebinding, no cross-site form
   }
   for (const file_path of ['/p/.warroom/approvals.json', '/p/.warroom/config.json']) assert.match(guard('Write', { file_path }), /"ask"/, file_path);
   assert.equal(guard('Bash', { command: 'node bin/war-room.mjs status' }), '');
+  // The guard cannot be switched off without the founder.
+  for (const command of ['claude plugin disable war-room', 'claude plugin uninstall war-room', 'sed -i "" s/x/y/ .claude/settings.local.json']) assert.match(guard('Bash', { command }), /"ask"/, command);
+  for (const file_path of ['/p/.claude/settings.json', '/p/.claude/settings.local.json', '/u/.claude/plugins/war-room/hooks/hooks.json']) assert.match(guard('Edit', { file_path }), /"ask"/, file_path);
   const dir = tmpProject();
   const port = 47000 + Math.floor(Math.random() * 900);
   const srv = spawn('node', [CLI, 'serve', '--port', String(port)], { cwd: dir });
@@ -293,6 +296,15 @@ test('security: no self-approval, no tampering, no rebinding, no cross-site form
   assert.equal(await status({ path: '/', headers: { host: `evil.example:${port}` } }), 403, 'DNS-rebinding host refused');
   assert.equal(await status({ path: '/api/thought', method: 'POST', headers: { 'content-type': 'text/plain' } }, '{"text":"x"}'), 415, 'form-style post refused');
   assert.equal(await status({ path: '/' }), 200);
+  // The secret link never leaves the page through the Referer header.
+  const html = fs.readFileSync(spawnSync('node', [CLI, 'dashboard'], { cwd: dir, encoding: 'utf8' }).stdout.trim(), 'utf8');
+  assert.match(html, /<meta name="referrer" content="no-referrer">/);
+  // A hostile agent name cannot break the page or the status.
+  const c = connect(dir);
+  tc.after(() => c.close());
+  await c.call('remember', { agent: '__proto__', kind: 'problem', text: 'proto test' });
+  assert.equal(spawnSync('node', [CLI, 'dashboard'], { cwd: dir }).status, 0);
+  assert.ok(!(await c.call('war_room_status', {})).error);
 });
 
 test('messages between agents', async () => {

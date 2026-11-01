@@ -39,24 +39,31 @@ export function renderDashboard(store, { live = false } = {}) {
   const working = new Set(tasks.filter((t) => t.status === 'claimed').map((t) => t.agent));
 
   // ── MAIN TAB ─────────────────────────────────────────
-  let hud = '<section class="card"><p class="note">No goal yet. Start one with <code>/war-room your goal</code>.</p></section>';
+  let goalPanel = '<section class="card"><h2>Main goal</h2><p class="note">No goal yet. Start one with <code>/war-room your goal</code>.</p></section>';
+  let todayPanel = '<section class="card"><h2>Today</h2><p class="note">No daily goals set yet.</p></section>';
+  let goalPct = 0;
+  let todayDone = 0;
+  let todayTotal = 0;
   if (main) {
     const checks = (main.milestones || []).flatMap((m) => m.checks);
     const done = checks.filter((c) => c.verified).length;
-    const daily = (main.daily?.[today] || []).map((it) => {
+    goalPct = pct(done, checks.length);
+    const items = (main.daily?.[today] || []).map((it) => {
       const t = tasks.find((x) => x.id === it.taskId);
-      const ok = t ? t.status === 'verified' : !!it.done;
-      return `<li class="${ok ? 'ok' : ''}"><span class="box">${ok ? '✓' : ''}</span><span>${esc(it.text)}</span></li>`;
-    }).join('');
-    hud = `<section class="hud">
-      <div class="boss-top"><span>${esc(main.title)}</span>${main.intake?.byWhen ? `<span class="boss-cd">${esc(main.intake.byWhen)}</span>` : ''}</div>
-      <div class="hp"><span style="width:${pct(done, checks.length)}%"></span></div>
-      <div class="boss-sub">${pct(done, checks.length)}% · ${done} of ${checks.length} checks verified</div>
-      <h3>Today</h3>
-      <ul class="daily">${daily || '<li class="none">No daily goals set yet.</li>'}</ul>
-      <h3>Milestones</h3>
+      return { text: it.text, ok: t ? t.status === 'verified' : !!it.done };
+    });
+    todayTotal = items.length;
+    todayDone = items.filter((i) => i.ok).length;
+    goalPanel = `<section class="hud goal-panel">
+      <div class="panel-k">Main goal</div>
+      <div class="boss-top"><span class="boss-name">${esc(main.title)}</span>${main.intake?.byWhen ? `<span class="boss-cd">⏳ ${esc(main.intake.byWhen)}</span>` : ''}</div>
+      <div class="hp"><span style="width:${goalPct}%"></span></div>
+      <div class="boss-sub">${goalPct}% · ${done} of ${checks.length} checks verified</div>
+      <div class="panel-k" style="margin-top:20px">Milestones</div>
       ${levelRows(main) || '<p class="boss-sub">No plan yet.</p>'}
     </section>`;
+    todayPanel = `<section class="card today-panel"><div class="card-h"><h2>Today</h2><span class="meta">${todayDone}/${todayTotal} done</span></div>
+      <ul class="daily">${items.map((i) => `<li class="${i.ok ? 'ok' : ''}"><span class="box">${i.ok ? '✓' : ''}</span><span>${esc(i.text)}</span></li>`).join('') || '<li class="none">No daily goals set yet.</li>'}</ul></section>`;
   }
 
   const qCards = questions.map((q) => {
@@ -71,11 +78,11 @@ export function renderDashboard(store, { live = false } = {}) {
       <div class="row"><button class="send" type="button" data-answer="${esc(q.id)}">Send answer</button><span class="note out"></span></div>
     </div>`;
   }).join('');
-  const needs = `<section class="card"><h2>Needs you</h2>
+  const needs = `<section class="card desk"><div class="card-h"><h2>Needs you</h2>${questions.length ? `<span class="pill warn">${questions.length}</span>` : ''}</div>
     ${qCards || '<p class="empty">Nothing waits on you.</p>'}
     ${reports.length ? `<p class="note">${reports.length} finished task${reports.length > 1 ? 's' : ''} waiting for the commander to check.</p>` : ''}
-  </section>
-  <section class="card"><h2>Tell the war room anything</h2>
+    <div class="divider"></div>
+    <h2>Tell the war room anything</h2>
     <div class="q"><textarea id="thought" placeholder="A new idea, a change of mind, a worry. Any words."></textarea>
     <div class="row"><button class="send" type="button" id="thoughtSend">Send</button><span class="note out"></span></div></div>
   </section>`;
@@ -87,10 +94,20 @@ export function renderDashboard(store, { live = false } = {}) {
     return `<div class="hud-card ${working.has(a) ? 'working' : ''}"><div class="hud-who"><span class="dot"></span>${esc(a)}<small>${ts.filter((t) => t.status === 'verified').length}/${ts.length} done</small></div>
       <div class="${live ? 'hud-do' : 'hud-last'}">${live ? `${esc(live.status)} · ${esc(live.title)}` : 'Idle'}</div>${live?.model ? `<div class="hud-last">${esc(live.model)} model</div>` : ''}</div>`;
   }).join('');
-  const chatsCard = `<section class="hud"><h3 style="margin-top:0">Chats</h3>${party ? `<div class="party">${party}</div>` : '<p class="boss-sub">No chats have work yet.</p>'}</section>`;
+  const chatsCard = `<section class="card"><div class="card-h"><h2>Chats</h2><span class="meta">${working.size} working</span></div>${party ? `<div class="party">${party}</div>` : '<p class="note">No chats have work yet.</p>'}</section>`;
 
   const recent = log.slice(0, 5).map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`).join('');
-  const recentCard = `<section class="card"><h2>Recent</h2>${recent || '<p class="note">Nothing yet.</p>'}<button class="link" type="button" data-go="details">See everything in Details →</button></section>`;
+  const recentCard = `<section class="card"><div class="card-h"><h2>Recent</h2><span class="meta">last 5</span></div>${recent || '<p class="note">Nothing yet.</p>'}<button class="link" type="button" data-go="details">See everything in Details →</button></section>`;
+
+  const kpis = [
+    ['Main goal', `${goalPct}%`, main ? 'checks verified' : 'no goal yet', goalPct ? 'accent' : ''],
+    ['Today', `${todayDone}/${todayTotal}`, 'daily goals done', todayTotal && todayDone === todayTotal ? 'ok' : ''],
+    ['Chats', `${working.size}/${agents.length}`, 'working now', working.size ? 'ok' : ''],
+    ['Needs you', questions.length, questions.length ? 'questions to answer' : 'all clear', questions.length ? 'warn' : 'ok'],
+  ].map(([k, v, sub, tone]) => `<div class="kpi t-${tone}"><span class="kpi-k">${k}</span><b>${esc(v)}</b><span class="kpi-s">${esc(sub)}</span></div>`).join('');
+  const mainPane = `<div class="kpis">${kpis}</div>
+    <div class="grid g-main"><div class="col">${goalPanel}</div><div class="col">${todayPanel}${chatsCard}</div></div>
+    <div class="grid g-desk"><div class="col">${needs}</div><div class="col">${recentCard}</div></div>`;
 
   // ── DETAILS TAB ─────────────────────────────────────
   const goalCards = goals.map((g) => `<section class="card"><h2>${g === main ? 'Main goal' : 'Goal'} · ${esc(g.status)}</h2>
@@ -122,11 +139,12 @@ export function renderDashboard(store, { live = false } = {}) {
   const logRows = log.map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`);
 
   const details = `
-    ${memoryMap}
-    ${goalCards}
-    <section class="card"><h2>Tasks</h2>${capped(taskRows) || '<p class="note">None yet.</p>'}</section>
-    <section class="card"><h2>Open messages</h2>${capped(msgRows) || '<p class="note">None.</p>'}</section>
-    <section class="card"><h2>Full log</h2>${capped(logRows) || '<p class="note">Nothing yet.</p>'}</section>`;
+    <nav class="jump"><a href="#d-memory">Memory map</a><a href="#d-goals">Goals</a><a href="#d-tasks">Tasks</a><a href="#d-msgs">Messages</a><a href="#d-log">Log</a></nav>
+    <div id="d-memory">${memoryMap}</div>
+    <div class="grid g-2"><div class="col" id="d-goals">${goalCards || '<section class="card"><h2>Goals</h2><p class="note">None yet.</p></section>'}</div>
+      <div class="col" id="d-tasks"><section class="card"><div class="card-h"><h2>Tasks</h2><span class="meta">${taskRows.length}</span></div>${capped(taskRows) || '<p class="note">None yet.</p>'}</section></div></div>
+    <div class="grid g-2"><div class="col" id="d-msgs"><section class="card"><div class="card-h"><h2>Open messages</h2><span class="meta">${msgRows.length}</span></div>${capped(msgRows) || '<p class="note">None.</p>'}</section></div>
+      <div class="col" id="d-log"><section class="card"><div class="card-h"><h2>Full log</h2><span class="meta">${logRows.length}</span></div>${capped(logRows) || '<p class="note">Nothing yet.</p>'}</section></div></div>`;
 
   const pills = [
     questions.length ? `<span class="pill warn">${questions.length} waiting on you</span>` : '<span class="pill ok">Nothing waits on you</span>',
@@ -141,17 +159,33 @@ export function renderDashboard(store, { live = false } = {}) {
 :root{--bg:#0e0d12;--surface:#17151d;--surface2:#201d29;--ink:#eeeaf6;--muted:#a09bb0;--line:#2d2938;--accent:#a184f2;--accent-ink:#130c26;--ok:#5ac38a;--warn:#e2a64f;--bad:#f2766c;--font:"Geist",system-ui,-apple-system,sans-serif;--mono:"Geist Mono",ui-monospace,Menlo,monospace;color-scheme:dark}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--font);padding:18px 16px 48px}
-.wrap{max-width:640px;margin:0 auto;display:grid;gap:16px}
+.wrap{max-width:1120px;margin:0 auto;display:grid;gap:22px}
+.top{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.2em;color:var(--accent);margin-bottom:4px}
+.grid{display:grid;gap:18px;align-items:start}.col{display:grid;gap:18px;min-width:0}
+.g-main{grid-template-columns:1.5fr 1fr}.g-desk{grid-template-columns:1.2fr 1fr}.g-2{grid-template-columns:1fr 1fr}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 16px;display:grid;gap:2px}
+.kpi-k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.kpi b{font-family:var(--mono);font-size:28px;font-weight:500;letter-spacing:-.02em;line-height:1.2}.kpi-s{font-size:12.5px;color:var(--muted)}
+.kpi.t-accent b{color:var(--accent)}.kpi.t-ok b{color:var(--ok)}.kpi.t-warn{border-color:#e2a64f66}.kpi.t-warn b{color:var(--warn)}
+.card-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:10px}.card-h h2{margin:0}
+.panel-k{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#a99be0;font-weight:600;margin-bottom:10px}
+.goal-panel{padding:18px 20px}.boss-name{font-size:16px;letter-spacing:.02em}
+.divider{height:1px;background:var(--line);margin:16px 0}
+.jump{display:flex;gap:6px;flex-wrap:wrap}.jump a{font-size:13px;color:var(--muted);text-decoration:none;padding:5px 12px;border-radius:999px;background:var(--surface);border:1px solid var(--line)}.jump a:hover{color:var(--ink)}
+@media (max-width:860px){.g-main,.g-desk,.g-2{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.top{align-items:flex-start}}
 h1{font-size:22px;letter-spacing:-.01em;margin:0}
 h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 10px;font-weight:600}
 .sub,.meta{font-family:var(--mono);font-size:12px;color:var(--muted)}.sub{font-size:13px;margin-top:2px}
 .pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .pill{font-size:12.5px;padding:3px 10px;border-radius:999px;background:var(--surface2);color:var(--muted);font-weight:500}.pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}
-.tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:12px;position:sticky;top:8px;z-index:3}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:12px;min-width:240px}
+@media (max-width:860px){.tabs{width:100%;position:sticky;top:8px;z-index:3}}
 .tabs button{border:0;background:none;color:var(--muted);padding:9px;border-radius:9px;font-weight:600}
 .tabs button.on{background:var(--accent);color:var(--accent-ink)}
-.pane{display:none;gap:16px}.pane.on{display:grid}
-.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 15px;min-width:0}
+.pane{display:none;gap:18px}.pane.on{display:grid}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px;min-width:0}
 .q{display:grid;gap:8px}.q+.q{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
 .qt{font-weight:600;overflow-wrap:anywhere}
 .quick{display:flex;flex-wrap:wrap;gap:6px}
@@ -200,9 +234,9 @@ ul.daily li{display:flex;gap:10px;align-items:flex-start;padding:6px 0}ul.daily 
 @keyframes pulse{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style></head><body><div class="wrap">
-<header><h1>War room · ${esc(cfg.project)}</h1><div class="sub">${esc(now())}${live ? ' · live' : ' · snapshot'}</div><div class="pills">${pills}</div></header>
-<nav class="tabs"><button type="button" class="on" data-go="main">Main</button><button type="button" data-go="details">Details</button></nav>
-<div class="pane on" id="main">${hud}${chatsCard}${needs}${recentCard}</div>
+<header class="top"><div><div class="eyebrow">WAR ROOM</div><h1>${esc(cfg.project)}</h1><div class="sub">${esc(now())}${live ? ' · live' : ' · snapshot'}</div><div class="pills">${pills}</div></div>
+<nav class="tabs"><button type="button" class="on" data-go="main">Main</button><button type="button" data-go="details">Details</button></nav></header>
+<div class="pane on" id="main">${mainPane}</div>
 <div class="pane" id="details">${details}</div>
 </div>
 <script>

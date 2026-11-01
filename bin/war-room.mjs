@@ -11,7 +11,9 @@ const store = new Store();
 
 // Actions that always need the founder's yes at that step, whatever permissions the agent has.
 const FOUNDER_YES = [
-  [/\bgit\s+push\b/, 'git push'],
+  [/\bgit\b[^|;&\n]*?\bpush\b/, 'git push'],
+  // An agent must never answer for the founder or rewrite the war room's approvals and settings.
+  [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer)\b|\.warroom\/(approvals|config|memory|goals)\.json/, 'approving, answering for the founder, or changing war-room settings'],
   [/\b(firebase|vercel|netlify|fly|wrangler|eas|amplify)\b[^|;&]*\b(deploy|publish|submit)\b|--prod\b/, 'deploy'],
   [/\b(npm|pnpm|yarn)\s+publish\b|\bgh\s+release\s+create\b|\bgh\s+repo\s+create\b/, 'publishing'],
   [/\b(altool|notarytool|fastlane|transporter)\b|\bxcrun\s+altool\b/, 'App Store / TestFlight upload'],
@@ -31,6 +33,7 @@ function founderYesReason(input) {
     return hit && hit[1];
   }
   if (['Write', 'Edit', 'MultiEdit'].includes(name) && /(^|\/)\.env(\.|$)|\.(pem|p8|p12|key)$/.test(ti.file_path || '')) return 'passwords or keys (secret file)';
+  if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(name) && /(^|\/)\.warroom\//.test(ti.file_path || ti.notebook_path || '')) return 'editing war-room approvals, memory or settings by hand';
   if (name.startsWith('mcp__') && !name.includes('war-room') && RISKY_TOOL.test(name.split('__').pop())) return 'an outside action (send, delete, publish or pay)';
   return null;
 }
@@ -144,6 +147,9 @@ switch (cmd) {
     http.createServer((req, res) => {
       const url = new URL(req.url, 'http://x');
       if (!tokenOk(url.searchParams.get('t') || req.headers['x-war-room-token'])) { res.writeHead(403); return res.end('Forbidden'); }
+      // A local page must only answer to localhost names, or a malicious site could rebind its DNS to it.
+      if (!lan && !new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]).has(req.headers.host)) { res.writeHead(403); return res.end('Forbidden host'); }
+      if (req.method === 'POST' && !String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'JSON only.' });
       const origin = req.headers.origin;
       if (req.method === 'POST' && origin && origin !== `http://${req.headers.host}`) return json(res, 403, { error: 'Cross-site request refused.' });
       if (req.method === 'GET' && url.pathname === '/api/version') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(version()); }

@@ -276,6 +276,25 @@ test('approvals: page buttons, phone token, guard uses an exact approval once', 
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.warroom/goals.json'), 'utf8'))[0].status, 'later');
 });
 
+test('security: no self-approval, no tampering, no rebinding, no cross-site form posts', async (tc) => {
+  const guard = (tool_name, tool_input) => spawnSync('node', [CLI, 'hook-guard'], { input: JSON.stringify({ tool_name, tool_input }), encoding: 'utf8', env: { ...process.env, WAR_ROOM_DIR: '/nonexistent' } }).stdout;
+  for (const command of ['node bin/war-room.mjs approve --id a1 --yes', 'war-room answer --question m1 --text yes', 'echo [] > .warroom/approvals.json', 'sed -i "" s/true/false/ .warroom/config.json', 'git -C /x push origin main', 'git -c core.a=b push']) {
+    assert.match(guard('Bash', { command }), /"permissionDecision":"ask"/, command);
+  }
+  for (const file_path of ['/p/.warroom/approvals.json', '/p/.warroom/config.json']) assert.match(guard('Write', { file_path }), /"ask"/, file_path);
+  assert.equal(guard('Bash', { command: 'node bin/war-room.mjs status' }), '');
+  const dir = tmpProject();
+  const port = 47000 + Math.floor(Math.random() * 900);
+  const srv = spawn('node', [CLI, 'serve', '--port', String(port)], { cwd: dir });
+  tc.after(() => srv.kill());
+  await new Promise((r) => srv.stdout.once('data', r));
+  const http = await import('node:http');
+  const status = (opts, body) => new Promise((r) => { const q = http.request({ host: '127.0.0.1', port, ...opts }, (res) => r(res.statusCode)); q.end(body); });
+  assert.equal(await status({ path: '/', headers: { host: `evil.example:${port}` } }), 403, 'DNS-rebinding host refused');
+  assert.equal(await status({ path: '/api/thought', method: 'POST', headers: { 'content-type': 'text/plain' } }, '{"text":"x"}'), 415, 'form-style post refused');
+  assert.equal(await status({ path: '/' }), 200);
+});
+
 test('messages between agents', async () => {
   const c = connect(tmpProject());
   await c.call('post_message', { agent: 'codex', to: 'commander', kind: 'question', text: 'Which file holds the tokens?' });

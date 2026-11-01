@@ -271,7 +271,7 @@ try{const t=localStorage.getItem('wr-tab');if(t)go(t)}catch{}
 document.querySelectorAll('[data-fill]').forEach(b=>b.onclick=()=>{b.closest('.q').querySelector('textarea').value=b.dataset.fill});
 const shq=s=>"'"+s.replace(/'/g,"'\\\\''")+"'";
 async function post(path,body,out,fallback){
-  if(!LIVE){out.className='note out';out.innerHTML='Copy and run in a terminal (or open this page with <code>war-room serve</code> to send from here):<br><code>'+fallback.replace(/</g,'&lt;')+'</code>';return false}
+  if(!LIVE){out.className='note out';out.textContent='Copy and run in a terminal (or open this page with war-room serve to send from here):';const c=document.createElement('code');c.textContent=fallback;out.append(document.createElement('br'),c);return false}
   try{const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json','x-war-room-token':TOKEN},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error||'failed');out.className='note out ok';out.textContent='Saved. The commander has it now.';return true}
   catch(e){out.className='note out bad';out.textContent='Not saved: '+e.message;return false}}
 document.querySelectorAll('[data-answer]').forEach(b=>b.onclick=async()=>{const q=b.closest('.q'),text=q.querySelector('textarea').value.trim(),out=q.querySelector('.out');if(!text){out.className='note out bad';out.textContent='Type an answer first.';return}

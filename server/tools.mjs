@@ -16,6 +16,19 @@ function today() {
   return now().slice(0, 10);
 }
 
+// Problems and ideas are a running record, not decisions: stored straight away, no conflict check.
+const LOG_KINDS = ['problem', 'idea'];
+const SECRET = /(sk-[a-z0-9]{10,}|AKIA[0-9A-Z]{12,}|-----BEGIN|\b\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}\b|password\s*[:=])/i;
+export function autoRemember(store, { kind, text, source, tags = [] }) {
+  if (SECRET.test(text)) text = '[not stored: looked like a password, key or card number]';
+  return store.update('memory', (memory) => {
+    const item = { id: nextId(memory, 'm'), kind, text, date: now(), source, tags, status: 'active' };
+    memory.push(item);
+    store.log({ agent: source, event: kind === 'idea' ? 'new_idea' : 'problem', id: item.id, text });
+    return item;
+  });
+}
+
 function cfgNum(store, key, dflt) {
   const v = store.config()[key];
   return Number.isFinite(v) ? v : dflt;
@@ -142,7 +155,7 @@ export const TOOLS = [
   },
   {
     name: 'remember',
-    description: 'Store one thing the founder said or decided. kind: rule (hard rule, shown to every agent), never (mistake not to repeat), decision, pref, fact, question (waiting on the founder). If it may conflict with an older item, nothing is stored and the conflicts are returned: ask the founder, then call again with replaces=<old id> or keepBoth=true.',
+    description: 'Store one thing in the long-term memory map. kind: rule (hard rule, shown to every agent), never (mistake not to repeat), decision, pref, fact, problem (a blocker or bug you hit — log it so no other chat hits it blind), idea (a new idea from the founder or a chat), question (waiting on the founder). For rule/never/decision/pref/fact: if it may conflict with an older item, nothing is stored and the conflicts are returned: ask the founder, then call again with replaces=<old id> or keepBoth=true. Problems and ideas are stored straight away.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -160,9 +173,10 @@ export const TOOLS = [
       if (/(sk-[a-z0-9]{10,}|AKIA[0-9A-Z]{12,}|-----BEGIN|\b\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}\b|password\s*[:=])/i.test(a.text)) {
         throw new Refused('This looks like a secret (key, password or card number). The war room never stores secrets.');
       }
+      if (LOG_KINDS.includes(a.kind) && !a.replaces) return { stored: true, item: autoRemember(store, { kind: a.kind, text: a.text, source: a.source || a.agent, tags: a.tags }) };
       return store.update('memory', (memory) => {
         if (!a.replaces && !a.keepBoth) {
-          const conflicts = memory.filter((m) => m.status === 'active' && m.kind !== 'question' && overlap(m.text, a.text) >= 3);
+          const conflicts = memory.filter((m) => m.status === 'active' && ![...LOG_KINDS, 'question'].includes(m.kind) && overlap(m.text, a.text) >= 3);
           if (conflicts.length) {
             return { stored: false, askFounder: `You said: "${a.text}". Earlier: ${conflicts.map((c) => `[${c.id}] ${c.date}: "${c.text}"`).join('; ')}. Replace the earlier one, or keep both?`, conflicts };
           }
@@ -248,7 +262,7 @@ export const TOOLS = [
     },
     run: (store, a) => {
       const memory = store.read('memory');
-      return store.update('goals', (goals) => {
+      const out = store.update('goals', (goals) => {
         const intake = { what: a.what, forWhom: a.forWhom, byWhen: a.byWhen, doneLooksLike: a.doneLooksLike, mustNever: a.mustNever };
         const missing = Object.entries(intake).filter(([, v]) => !v).map(([k]) => k);
         const g = { id: nextId(goals, 'g'), title: a.title, founderWords: a.founderWords, intake, status: 'intake', created: now(), milestones: [], daily: {} };
@@ -257,6 +271,8 @@ export const TOOLS = [
         const related = relevantMemory(memory, `${a.title} ${a.founderWords}`, 8, true).map(({ id, kind, date, text }) => ({ id, kind, date, text }));
         return { goal: g, askFounderFirst: missing, relatedMemory: related, remind: related.length ? 'Before judging, show the founder anything in relatedMemory they seem to have forgotten (quote the date and their words).' : undefined };
       });
+      autoRemember(store, { kind: 'idea', text: `New goal ${out.goal.id}: ${a.title} (founder: "${a.founderWords}")`, source: a.agent, tags: ['goal'] });
+      return out;
     },
   },
   {
@@ -432,6 +448,7 @@ export const TOOLS = [
         store.log({ agent: a.agent, event: 'report_done', id: t.id });
         return t;
       });
+      if (a.notVerified) autoRemember(store, { kind: 'problem', text: `${t.id} (${t.title}): ${a.agent} could not verify — ${a.notVerified}`, source: a.agent, tags: [t.id, ...(t.tags || [])] });
       // Event-driven: the report lands in the commander's inbox, so the war room never has to poll chats.
       store.update('messages', (messages) => {
         messages.push({ id: messages.length + 1, from: a.agent, to: store.config().commander, kind: 'handoff', text: `Task ${t.id} (${t.title}) reported done: ${a.summary}. Evidence: ${a.evidence}${a.notVerified ? `. Not verified by the worker: ${a.notVerified}` : ''}`, date: now(), open: true });
@@ -462,6 +479,7 @@ export const TOOLS = [
         });
       }
       store.log({ agent: a.agent, event: a.accepted ? 'verified' : 'rejected', id: t.id });
+      if (!a.accepted) autoRemember(store, { kind: 'problem', text: `${t.id} (${t.title}) by ${t.agent} failed the commander's check: ${a.howChecked}`, source: a.agent, tags: [t.id, ...(t.tags || [])] });
       return t;
     },
   },
@@ -469,13 +487,17 @@ export const TOOLS = [
     name: 'post_message',
     description: 'Send a message to another agent, the commander, or "all". kind: request, contract (an interface the other side builds against), handoff, question, conflict.',
     inputSchema: { type: 'object', properties: { agent: AGENT, to: str('Agent name, "commander" or "all".'), kind: { type: 'string', enum: ['request', 'contract', 'handoff', 'question', 'conflict', 'info'] }, text: str('What, which file/function, why.') }, required: ['agent', 'to', 'kind', 'text'] },
-    run: (store, a) => store.update('messages', (messages) => {
-      const to = a.to === 'commander' ? store.config().commander : a.to;
-      const m = { id: messages.length + 1, from: a.agent, to, kind: a.kind, text: a.text, date: now(), open: true };
-      messages.push(m);
-      store.log({ agent: a.agent, event: 'message', id: m.id, to });
+    run: (store, a) => {
+      const m = store.update('messages', (messages) => {
+        const to = a.to === 'commander' ? store.config().commander : a.to;
+        const m = { id: messages.length + 1, from: a.agent, to, kind: a.kind, text: a.text, date: now(), open: true };
+        messages.push(m);
+        store.log({ agent: a.agent, event: 'message', id: m.id, to });
+        return m;
+      });
+      if (a.kind === 'conflict') autoRemember(store, { kind: 'problem', text: `${a.agent} reported a conflict: ${a.text}`, source: a.agent });
       return m;
-    }),
+    },
   },
   {
     name: 'read_messages',

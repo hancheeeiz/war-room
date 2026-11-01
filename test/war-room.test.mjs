@@ -207,6 +207,34 @@ test('serve: founder answers and thoughts save instantly; cross-site posts refus
   assert.ok(inbox.some((m) => m.text.includes('maybe add a widget later')));
 });
 
+test('memory map auto-stores problems and ideas', async (tc) => {
+  const dir = tmpProject();
+  const c = connect(dir);
+  tc.after(() => c.close());
+  await c.call('propose_goal', { agent: 'commander', title: 'Offline mode', founderWords: 'works on the train', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
+  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', recommendation: 'keep', reason: 'x' });
+  await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' });
+  await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Cache', win: 'w', checks: ['c'] }] });
+  await c.call('create_task', { agent: 'commander', goalId: 'g1', title: 'Cache layer', assignTo: 'w1', doneCheck: 'airplane mode test' });
+  await c.call('get_task_packet', { agent: 'w1' });
+  await c.call('report_done', { agent: 'w1', taskId: 't1', summary: 'cache added', evidence: 'unit test', notVerified: 'no real device to test airplane mode' });
+  await c.call('verify_task', { agent: 'commander', taskId: 't1', accepted: false, howChecked: 'airplane mode still shows a blank screen' });
+  await c.call('post_message', { agent: 'w2', to: 'commander', kind: 'conflict', text: 'w1 and I both need src/cache.ts' });
+  await c.call('remember', { agent: 'w1', kind: 'problem', text: 'IndexedDB quota errors on iOS Safari private mode', tags: ['cache'] });
+  const memory = JSON.parse(fs.readFileSync(path.join(dir, '.warroom/memory.json'), 'utf8'));
+  const problems = memory.filter((m) => m.kind === 'problem').map((m) => m.text).join('\n');
+  assert.match(problems, /could not verify — no real device/);
+  assert.match(problems, /failed the commander's check: airplane mode/);
+  assert.match(problems, /reported a conflict/);
+  assert.match(problems, /IndexedDB quota/);
+  assert.ok(memory.some((m) => m.kind === 'idea' && m.text.includes('Offline mode')), 'a new goal is logged as an idea');
+  const html = fs.readFileSync(spawnSync('node', [CLI, 'dashboard'], { cwd: dir, encoding: 'utf8' }).stdout.trim(), 'utf8');
+  assert.match(html, /Memory map/);
+  assert.match(html, /Problems by chat/);
+  const mainPane = html.slice(html.indexOf('id="main"'), html.indexOf('id="details"'));
+  assert.match(mainPane, /Chats/, 'chats are on the main tab');
+});
+
 test('messages between agents', async () => {
   const c = connect(tmpProject());
   await c.call('post_message', { agent: 'codex', to: 'commander', kind: 'question', text: 'Which file holds the tokens?' });

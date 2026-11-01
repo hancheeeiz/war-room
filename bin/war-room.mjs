@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { Store, now } from '../server/store.mjs';
-import { brief, callTool } from '../server/tools.mjs';
+import { autoRemember, brief, callTool } from '../server/tools.mjs';
 
 const [cmd, ...rest] = process.argv.slice(2);
 const flag = (name, dflt) => { const i = rest.indexOf(`--${name}`); return i >= 0 ? rest[i + 1] : dflt; };
@@ -51,7 +51,10 @@ function checkStale(store) {
       posted += 1;
     }
   });
-  if (posted) store.log({ agent: 'war-room-watch', event: 'stale_alert', count: posted });
+  if (posted) {
+    store.log({ agent: 'war-room-watch', event: 'stale_alert', count: posted });
+    for (const t of stale) autoRemember(store, { kind: 'problem', text: `${t.id} (${t.title}): ${t.agent} went silent after claiming it at ${t.claimed}`, source: 'war-room-watch', tags: [t.id, t.agent] });
+  }
   return posted;
 }
 
@@ -127,6 +130,7 @@ switch (cmd) {
           const out = req.url === '/api/answer'
             ? callTool(store, 'founder_answer', { agent: store.config().commander, questionId: String(b.questionId), founderWords: text })
             : callTool(store, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: `Founder thought: ${text}` });
+          if (!out.error && req.url === '/api/thought') autoRemember(store, { kind: 'idea', text, source: 'founder' });
           if (out.error) return json(res, 400, { error: out.error });
           notify(store, req.url === '/api/answer' ? `Founder answered ${b.questionId}.` : 'Founder sent a new thought.');
           return json(res, 200, { ok: true });

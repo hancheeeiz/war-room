@@ -4,7 +4,7 @@ import path from 'node:path';
 
 const FILES = { memory: [], goals: [], tasks: [], messages: [] };
 
-export const MEMORY_KINDS = ['rule', 'never', 'decision', 'pref', 'fact', 'question'];
+export const MEMORY_KINDS = ['rule', 'never', 'decision', 'pref', 'fact', 'problem', 'idea', 'question'];
 
 export function findRoot(start = process.env.WAR_ROOM_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd()) {
   let dir = path.resolve(start);

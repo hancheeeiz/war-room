@@ -80,10 +80,6 @@ export function renderDashboard(store, { live = false } = {}) {
     <div class="row"><button class="send" type="button" id="thoughtSend">Send</button><span class="note out"></span></div></div>
   </section>`;
 
-  const recent = log.slice(0, 5).map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`).join('');
-  const recentCard = `<section class="card"><h2>Recent</h2>${recent || '<p class="note">Nothing yet.</p>'}<button class="link" type="button" data-go="details">See everything in Details →</button></section>`;
-
-  // ── DETAILS TAB ─────────────────────────────────────
   const agents = [...new Set(tasks.map((t) => t.agent))];
   const party = agents.map((a) => {
     const ts = tasks.filter((t) => t.agent === a);
@@ -91,7 +87,12 @@ export function renderDashboard(store, { live = false } = {}) {
     return `<div class="hud-card ${working.has(a) ? 'working' : ''}"><div class="hud-who"><span class="dot"></span>${esc(a)}<small>${ts.filter((t) => t.status === 'verified').length}/${ts.length} done</small></div>
       <div class="${live ? 'hud-do' : 'hud-last'}">${live ? `${esc(live.status)} · ${esc(live.title)}` : 'Idle'}</div>${live?.model ? `<div class="hud-last">${esc(live.model)} model</div>` : ''}</div>`;
   }).join('');
+  const chatsCard = `<section class="hud"><h3 style="margin-top:0">Chats</h3>${party ? `<div class="party">${party}</div>` : '<p class="boss-sub">No chats have work yet.</p>'}</section>`;
 
+  const recent = log.slice(0, 5).map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`).join('');
+  const recentCard = `<section class="card"><h2>Recent</h2>${recent || '<p class="note">Nothing yet.</p>'}<button class="link" type="button" data-go="details">See everything in Details →</button></section>`;
+
+  // ── DETAILS TAB ─────────────────────────────────────
   const goalCards = goals.map((g) => `<section class="card"><h2>${g === main ? 'Main goal' : 'Goal'} · ${esc(g.status)}</h2>
     <div class="goal">${esc(g.title)}</div>
     ${g.verdict ? `<p class="note">Judged: ${esc(g.verdict.recommendation)} — ${esc(g.verdict.reason)}</p>` : ''}
@@ -100,20 +101,30 @@ export function renderDashboard(store, { live = false } = {}) {
   </section>`).join('');
 
   const taskRows = tasks.slice().reverse().map((t) => `<div class="item"><div class="plain"><span class="tag">${esc(t.status)}</span>${esc(t.title)}</div><div class="meta">${esc(t.id)} · ${esc(t.agent)} · done when: ${esc(t.doneCheck)}</div></div>`);
-  const kinds = [['rule', 'Rules'], ['never', 'Never again'], ['decision', 'Decisions'], ['pref', 'Preferences'], ['fact', 'Facts']];
-  const active = memory.filter((m) => m.status === 'active');
+  // Memory map: every kind as a region with its count; problems also grouped by the chat that hit them.
+  const kinds = [['problem', 'Problems hit', 'bad'], ['idea', 'New ideas', 'accent'], ['decision', 'Decisions', 'warn'], ['rule', 'Rules', 'bad'], ['never', 'Never again', 'bad'], ['pref', 'Preferences', 'accent'], ['fact', 'Facts', 'ok']];
+  const active = memory.filter((m) => m.status === 'active' && m.kind !== 'question');
+  const row = (m) => `<div class="item"><div class="plain">${esc(m.text)}</div><div class="meta">${esc(m.id)} · ${esc(m.date)} · ${esc(m.source || '')}</div></div>`;
+  const regions = kinds.map(([k, label, tone]) => `<a class="region t-${tone}" href="#mem-${k}"><b>${active.filter((m) => m.kind === k).length}</b><span>${label}</span></a>`).join('');
+  const problems = active.filter((m) => m.kind === 'problem');
+  const bySource = {};
+  for (const p of problems) (bySource[p.source || 'unknown'] ||= []).push(p);
+  const problemMap = Object.entries(bySource).map(([src, ps]) => `<div class="hud-card"><div class="hud-who"><span class="dot bad"></span>${esc(src)}<small>${ps.length}</small></div><div class="hud-last">${esc(ps[ps.length - 1].text.slice(0, 110))}</div></div>`).join('');
   const memCards = kinds.map(([k, label]) => {
-    const rows = active.filter((m) => m.kind === k).reverse().map((m) => `<div class="item"><div class="plain">${esc(m.text)}</div><div class="meta">${esc(m.id)} · ${esc(m.date)}</div></div>`);
-    return rows.length ? `<details class="mem"><summary>${label} <span class="meta">${rows.length}</span></summary>${capped(rows)}</details>` : '';
+    const rows = active.filter((m) => m.kind === k).reverse().map(row);
+    return rows.length ? `<details class="mem" id="mem-${k}"${k === 'problem' || k === 'idea' ? ' open' : ''}><summary>${label} <span class="meta">${rows.length}</span></summary>${capped(rows)}</details>` : '';
   }).join('');
+  const memoryMap = `<section class="card"><h2>Memory map · ${active.length} kept, stored automatically</h2>
+    <div class="regions">${regions}</div>
+    ${problemMap ? `<h2 style="margin-top:16px">Problems by chat</h2><div class="party">${problemMap}</div>` : ''}
+    <div style="margin-top:14px">${memCards || '<p class="note">Empty.</p>'}</div></section>`;
   const msgRows = messages.filter((m) => m.open).reverse().map((m) => `<div class="item"><div class="plain"><span class="tag">${esc(m.kind)}</span>${esc(m.text)}</div><div class="meta">#${m.id} · ${esc(m.from)} → ${esc(m.to)} · ${esc(m.date)}</div></div>`);
   const logRows = log.map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`);
 
   const details = `
-    <section class="hud"><h3 style="margin-top:0">Chats</h3>${party ? `<div class="party">${party}</div>` : '<p class="boss-sub">No chats have work yet.</p>'}</section>
+    ${memoryMap}
     ${goalCards}
     <section class="card"><h2>Tasks</h2>${capped(taskRows) || '<p class="note">None yet.</p>'}</section>
-    <section class="card"><h2>Memory · ${active.filter((m) => m.kind !== 'question').length} kept</h2>${memCards || '<p class="note">Empty.</p>'}</section>
     <section class="card"><h2>Open messages</h2>${capped(msgRows) || '<p class="note">None.</p>'}</section>
     <section class="card"><h2>Full log</h2>${capped(logRows) || '<p class="note">Nothing yet.</p>'}</section>`;
 
@@ -180,13 +191,18 @@ ul.daily li{display:flex;gap:10px;align-items:flex-start;padding:6px 0}ul.daily 
 .hud-card{border:1px solid #3a2f66;background:#17142a;border-radius:8px;padding:8px 10px;font-size:12px;min-width:0}.hud-card.working{border-color:var(--ok)}
 .hud-who{font-weight:600;letter-spacing:.06em;display:flex;align-items:center;gap:6px}.hud-who small{margin-left:auto;font-weight:400;color:var(--muted);font-size:10.5px}
 .dot{width:8px;height:8px;border-radius:50%;background:#6b6580;flex:none}.working .dot{background:var(--ok);box-shadow:0 0 8px var(--ok);animation:pulse 1.4s infinite}
+.regions{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+.region{display:grid;gap:2px;padding:10px 12px;border-radius:10px;background:var(--surface2);border:1px solid var(--line);color:var(--ink);text-decoration:none}
+.region b{font-size:22px;font-family:var(--mono)}.region span{font-size:12px;color:var(--muted)}
+.region.t-bad b{color:var(--bad)}.region.t-warn b{color:var(--warn)}.region.t-ok b{color:var(--ok)}.region.t-accent b{color:var(--accent)}
+.dot.bad{background:var(--bad)}
 .hud-do{margin-top:4px;color:#ffb454;overflow-wrap:anywhere}.hud-last{margin-top:4px;color:var(--muted);overflow-wrap:anywhere}
 @keyframes pulse{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style></head><body><div class="wrap">
 <header><h1>War room · ${esc(cfg.project)}</h1><div class="sub">${esc(now())}${live ? ' · live' : ' · snapshot'}</div><div class="pills">${pills}</div></header>
 <nav class="tabs"><button type="button" class="on" data-go="main">Main</button><button type="button" data-go="details">Details</button></nav>
-<div class="pane on" id="main">${hud}${needs}${recentCard}</div>
+<div class="pane on" id="main">${hud}${chatsCard}${needs}${recentCard}</div>
 <div class="pane" id="details">${details}</div>
 </div>
 <script>

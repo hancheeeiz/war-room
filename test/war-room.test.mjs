@@ -178,8 +178,9 @@ test('dashboard renders with capped log and all tabs', async (tc) => {
   const out = spawnSync('node', [CLI, 'dashboard'], { cwd: dir, encoding: 'utf8' });
   const html = fs.readFileSync(out.stdout.trim(), 'utf8');
   assert.match(html, /Ship the demo/);
-  for (const tab of ['⚔ Goals', '🛡 Chats', '❓ Inbox', '🧠 Memory', '📜 Log']) assert.ok(html.includes(tab), tab);
-  assert.match(html, /show \d+ more/, 'long lists must fold behind show-more');
+  for (const tab of ['Command', 'Quests', 'Party', 'Memory', 'Log']) assert.ok(html.includes(`>${tab}</button>`), tab);
+  assert.match(html, /COMMANDER LV \d+/);
+  assert.match(html, /\+ \d+ more/, 'long lists must fold behind show-more');
   assert.ok(!html.includes('undefined'), 'no undefined leaks into the page');
 });
 

@@ -139,7 +139,7 @@ export function renderDashboard(store, { live = false } = {}) {
 
   const taskRows = tasks.slice().reverse().map((t) => `<div class="item"><div class="plain"><span class="tag">${esc(t.status)}</span>${esc(t.title)}</div><div class="meta">${esc(t.id)} · ${esc(t.agent)} · done when: ${esc(t.doneCheck)}</div></div>`);
   // Memory map: every kind as a region with its count; problems also grouped by the chat that hit them.
-  const kinds = [['problem', 'Problems hit', 'bad'], ['idea', 'New ideas', 'accent'], ['decision', 'Decisions', 'warn'], ['rule', 'Rules', 'bad'], ['never', 'Never again', 'bad'], ['pref', 'Preferences', 'accent'], ['fact', 'Facts', 'ok']];
+  const kinds = [['problem', 'Problems hit', 'bad'], ['idea', 'New ideas', 'accent'], ['todo', 'To do', 'warn'], ['decision', 'Decisions', 'warn'], ['rule', 'Rules', 'bad'], ['never', 'Never again', 'bad'], ['pref', 'Preferences', 'accent'], ['fact', 'Facts', 'ok']];
   const active = memory.filter((m) => m.status === 'active' && m.kind !== 'question');
   const row = (m) => `<div class="item"><div class="plain">${esc(m.text)}</div><div class="meta">${esc(m.id)} · ${esc(m.date)} · ${esc(m.source || '')}</div></div>`;
   const regions = kinds.map(([k, label, tone]) => `<a class="region t-${tone}" href="#mem-${k}"><b>${active.filter((m) => m.kind === k).length}</b><span>${label}</span></a>`).join('');

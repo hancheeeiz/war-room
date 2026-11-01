@@ -18,7 +18,7 @@ function today() {
 }
 
 // Problems and ideas are a running record, not decisions: stored straight away, no conflict check.
-const LOG_KINDS = ['problem', 'idea'];
+const LOG_KINDS = ['problem', 'idea', 'todo'];
 const SECRET = /(sk-[a-z0-9]{10,}|AKIA[0-9A-Z]{12,}|-----BEGIN|\b\d{4}[ -]?\d{4}[ -]?\d{4}[ -]?\d{4}\b|password\s*[:=])/i;
 export function autoRemember(store, { kind, text, source, tags = [] }) {
   if (SECRET.test(text)) text = '[not stored: looked like a password, key or card number]';
@@ -214,7 +214,7 @@ export const TOOLS = [
   },
   {
     name: 'remember',
-    description: 'Store one thing in the long-term memory map. kind: rule (hard rule, shown to every agent), never (mistake not to repeat), decision, pref, fact, problem (a blocker or bug you hit — log it so no other chat hits it blind), idea (a new idea from the founder or a chat), question (waiting on the founder). For rule/never/decision/pref/fact: if it may conflict with an older item, nothing is stored and the conflicts are returned: ask the founder, then call again with replaces=<old id> or keepBoth=true. Problems and ideas are stored straight away.',
+    description: 'Store one thing in the long-term memory map. kind: rule (hard rule, shown to every agent), never (mistake not to repeat), decision, pref, fact, problem (a blocker or bug you hit — log it so no other chat hits it blind), idea (a new idea from the founder or a chat), todo (something the founder said needs doing), question (waiting on the founder). For rule/never/decision/pref/fact: if it may conflict with an older item, nothing is stored and the conflicts are returned: ask the founder, then call again with replaces=<old id> or keepBoth=true. Problems, ideas and to-dos are stored straight away.',
     inputSchema: {
       type: 'object',
       properties: {

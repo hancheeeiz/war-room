@@ -9,7 +9,7 @@ A commander for solo builders who run several AI coding chats at once. One chat 
 - **Connects other agents.** Codex, Cursor, Gemini CLI or any agent that speaks MCP can join through the same connector.
 - **Asks for your yes before risky actions.** A guard hook asks first before git push, deploys, publishing, app store uploads, deleting data, money, keys and installing new skills.
 
-- **Starts with good rules.** Nine starter rules are built in, so you don't write them yourself: ask before money and before anything hard to undo, check before reporting, recall memory before asking, one plain question at a time, and more. Add your own rules on top.
+- **Starts with good rules.** Nine starter rules are built in, so you don't write them yourself: ask before money and before anything hard to undo, check before reporting, record what you say (preferences, decisions, ideas, to-dos) and recall it before asking, one plain question at a time, and more. Add your own rules on top.
 
 No goal, no war room: the session hook stays silent in projects that have no `.warroom/` folder.
 

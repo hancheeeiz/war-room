@@ -6,7 +6,7 @@ import path from 'node:path';
 
 const FILES = { memory: [], goals: [], tasks: [], messages: [], approvals: [] };
 
-export const MEMORY_KINDS = ['rule', 'never', 'decision', 'pref', 'fact', 'problem', 'idea', 'question'];
+export const MEMORY_KINDS = ['rule', 'never', 'decision', 'pref', 'fact', 'problem', 'idea', 'todo', 'question'];
 
 // Look upward for .warroom, but never above the home folder: a planted /tmp or /Users/.warroom must not be picked up.
 export function findRoot(start = process.env.WAR_ROOM_DIR || process.env.CLAUDE_PROJECT_DIR || process.cwd()) {

@@ -420,3 +420,17 @@ test('starter rules: every new war room has them; only the founder can switch on
   for (const command of ['war-room rules --off s2 --yes', 'node bin/war-room.mjs confirm-rules --yes', 'cat ~/.config/war-room/secret', 'WAR_ROOM_HOME=/tmp/k war-room approve --id a1 --yes']) assert.match(guard(command), /"ask"|"deny"/, command);
   assert.equal(guard('war-room rules'), '');
 });
+
+test('to-dos the founder mentions are stored straight away and shown on the page', async () => {
+  const dir = tmpProject();
+  const c = connect(dir);
+  const r = await c.call('remember', { agent: 'commander', kind: 'todo', text: 'Send the launch email to the beta list', source: 'founder in chat' });
+  assert.equal(r.json.stored, true);
+  const again = await c.call('remember', { agent: 'commander', kind: 'todo', text: 'Send the launch email to the press list', source: 'founder in chat' });
+  assert.equal(again.json.stored, true, 'no conflict prompt for to-dos');
+  c.close();
+  spawnSync('node', [CLI, 'dashboard'], { cwd: dir });
+  const html = fs.readFileSync(path.join(dir, '.warroom/dashboard.html'), 'utf8');
+  assert.match(html, /To do/);
+  assert.match(html, /launch email to the beta list/);
+});

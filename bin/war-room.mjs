@@ -102,6 +102,41 @@ switch (cmd) {
     console.log(file);
     break;
   }
+  case 'serve': {
+    // Local page where the founder answers and drops thoughts; saves straight into the war room. 127.0.0.1 only.
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    const http = await import('node:http');
+    const { renderDashboard } = await import('../server/dashboard.mjs');
+    const port = Number(flag('port', 4818));
+    const version = () => ['memory', 'goals', 'tasks', 'messages'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
+      + (fs.existsSync(`${store.root}/log.jsonl`) ? fs.statSync(`${store.root}/log.jsonl`).mtimeMs : 0);
+    const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+    http.createServer((req, res) => {
+      const origin = req.headers.origin;
+      if (req.method === 'POST' && origin && origin !== `http://${req.headers.host}`) return json(res, 403, { error: 'Cross-site request refused.' });
+      if (req.method === 'GET' && req.url === '/api/version') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(version()); }
+      if (req.method === 'GET' && (req.url === '/' || req.url.startsWith('/?'))) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(renderDashboard(store, { live: true })); }
+      if (req.method === 'POST' && ['/api/answer', '/api/thought'].includes(req.url)) {
+        let body = '';
+        req.on('data', (d) => { body += d; if (body.length > 20000) req.destroy(); });
+        req.on('end', () => {
+          let b = {};
+          try { b = JSON.parse(body); } catch { return json(res, 400, { error: 'Bad request.' }); }
+          const text = String(b.text || '').trim();
+          if (!text) return json(res, 400, { error: 'Empty.' });
+          const out = req.url === '/api/answer'
+            ? callTool(store, 'founder_answer', { agent: store.config().commander, questionId: String(b.questionId), founderWords: text })
+            : callTool(store, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: `Founder thought: ${text}` });
+          if (out.error) return json(res, 400, { error: out.error });
+          notify(store, req.url === '/api/answer' ? `Founder answered ${b.questionId}.` : 'Founder sent a new thought.');
+          return json(res, 200, { ok: true });
+        });
+        return;
+      }
+      res.writeHead(404); res.end('Not found');
+    }).listen(port, '127.0.0.1', () => console.log(`War room page: http://127.0.0.1:${port}  (this computer only; Ctrl-C to stop)`));
+    break;
+  }
   case 'check-stale': {
     if (!store.exists()) { console.log('No war room here.'); break; }
     const n = checkStale(store);
@@ -156,5 +191,5 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('war-room init [--project NAME] [--commander NAME] | status | dashboard | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
+    console.log('war-room init [--project NAME] [--commander NAME] | status | dashboard | serve [--port 4818] | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
 }

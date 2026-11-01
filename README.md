@@ -54,6 +54,17 @@ Cursor (`.cursor/mcp.json`) and Gemini CLI (`.gemini/settings.json`):
 
 Tell that agent its name ("you are `codex` in the war room; call war_room_brief"). The guard hook is Claude Code only. In other agents, keep their own approval settings on for push, deploy and delete.
 
+## The page
+
+```bash
+node /path/to/war-room/bin/war-room.mjs serve        # http://127.0.0.1:4818, this computer only
+node /path/to/war-room/bin/war-room.mjs dashboard    # or write a static .warroom/dashboard.html
+```
+
+**Main** tab: the main goal's progress bar and deadline, today's goals, the milestone bars, the questions waiting on you (answer in place, with the suggested answer one tap away), a box to tell the war room any new thought, and the 5 most recent events. **Details** tab: every chat and what it is doing, every goal with its checks, all tasks, the memory by kind, open messages and the full log, each list folded after 10 rows.
+
+Under `serve`, answers and thoughts save straight into the war room and the page refreshes itself when anything changes. The static file shows a copy-and-run command instead.
+
 ## The watcher: one alarm, no polling
 
 The war room is event-driven — a finished task drops its report into the commander's inbox by itself, so nobody checks chats on a timer. The one exception is a chat that dies without reporting. For that, run the watcher:

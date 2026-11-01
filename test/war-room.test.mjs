@@ -178,10 +178,33 @@ test('dashboard renders with capped log and all tabs', async (tc) => {
   const out = spawnSync('node', [CLI, 'dashboard'], { cwd: dir, encoding: 'utf8' });
   const html = fs.readFileSync(out.stdout.trim(), 'utf8');
   assert.match(html, /Ship the demo/);
-  for (const tab of ['Command', 'Quests', 'Party', 'Memory', 'Log']) assert.ok(html.includes(`>${tab}</button>`), tab);
-  assert.match(html, /COMMANDER LV \d+/);
-  assert.match(html, /\+ \d+ more/, 'long lists must fold behind show-more');
+  for (const tab of ['Main', 'Details']) assert.ok(html.includes(`>${tab}</button>`), tab);
+  const mainPane = html.slice(html.indexOf('id="main"'), html.indexOf('id="details"'));
+  assert.ok((mainPane.match(/class="item"/g) || []).length <= 5, 'main tab shows at most 5 recent log items');
+  assert.match(html, /Show \d+ more/, 'long lists must fold behind show-more');
   assert.ok(!html.includes('undefined'), 'no undefined leaks into the page');
+});
+
+test('serve: founder answers and thoughts save instantly; cross-site posts refused', async (tc) => {
+  const dir = tmpProject();
+  const c = connect(dir);
+  tc.after(() => c.close());
+  await c.call('ask_founder', { agent: 'w1', question: 'Ship on Monday or Tuesday?', suggested: 'Tuesday' });
+  const port = 48000 + Math.floor(Math.random() * 1000);
+  const srv = spawn('node', [CLI, 'serve', '--port', String(port)], { cwd: dir });
+  tc.after(() => srv.kill());
+  await new Promise((r) => srv.stdout.once('data', r));
+  const base = `http://127.0.0.1:${port}`;
+  assert.match(await (await fetch(base)).text(), /Ship on Monday or Tuesday/);
+  const bad = await fetch(`${base}/api/answer`, { method: 'POST', headers: { origin: 'https://evil.example', 'content-type': 'application/json' }, body: JSON.stringify({ questionId: 'm1', text: 'x' }) });
+  assert.equal(bad.status, 403);
+  const ok = await fetch(`${base}/api/answer`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ questionId: 'm1', text: 'Tuesday' }) });
+  assert.equal(ok.status, 200);
+  await fetch(`${base}/api/thought`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'maybe add a widget later' }) });
+  const dec = (await c.call('recall', { query: 'ship monday tuesday' })).json;
+  assert.ok(dec.some((m) => m.kind === 'decision' && m.text.includes('Tuesday')));
+  const inbox = (await c.call('read_messages', { agent: 'commander' })).json;
+  assert.ok(inbox.some((m) => m.text.includes('maybe add a widget later')));
 });
 
 test('messages between agents', async () => {

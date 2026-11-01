@@ -105,7 +105,8 @@ export function renderDashboard(store, { live = false } = {}) {
   const approvalCards = [
     ...approvals.map((x) => `<div class="ap" data-ap="${esc(x.id)}">
       <div class="ap-main"><div class="qt">${esc(x.action)}</div><div class="note" style="margin:2px 0 0">${esc(x.why || '')}</div>
-      <div class="meta">${esc(x.id)} · ${esc(x.agent)} · ${esc(x.asked)}${x.command ? ` · <code>${esc(x.command)}</code>` : ''}</div></div>
+      ${x.command ? `<div class="cmd"><span>Will run exactly:</span><code>${esc(x.command)}</code></div>` : ''}
+      <div class="meta">${esc(x.id)} · asked by ${esc(x.agent)} · ${esc(x.asked)}</div></div>
       <div class="ap-btns"><button class="send" type="button" data-approve="${esc(x.id)}" data-yes="1">Approve</button><button class="ghost" type="button" data-approve="${esc(x.id)}" data-yes="0">Deny</button></div>
       <span class="note out"></span></div>`),
     ...judged.map((g) => `<div class="ap">
@@ -193,6 +194,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--font);pa
 .approve{border-color:#e2a64f88;box-shadow:0 0 0 1px #e2a64f22 inset,0 8px 30px #e2a64f14}
 .ap{display:grid;grid-template-columns:1fr auto;gap:10px 16px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}.ap:first-of-type{border-top:0;padding-top:0}
 .ap-btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.ap .out{grid-column:1/-1}
+.cmd{margin:8px 0 4px;display:grid;gap:4px}.cmd span{font-size:12px;color:var(--warn);font-weight:600}.cmd code{display:block;white-space:pre-wrap;word-break:break-all;font-size:12.5px;padding:8px 10px;border:1px solid #e2a64f55}
 .ghost{border:1px solid var(--line);background:var(--surface2);color:var(--ink);border-radius:10px;padding:9px 14px;font-weight:500}
 @media (max-width:560px){.ap{grid-template-columns:1fr}.ap-btns{justify-content:stretch}.ap-btns button{flex:1;padding:12px}}
 .divider{height:1px;background:var(--line);margin:16px 0}

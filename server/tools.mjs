@@ -566,9 +566,28 @@ export const TOOLS = [
   },
 ];
 
+// Enforce each tool's schema on the server: clients are not trusted to have checked types, enums or required fields.
+function checkArgs(schema, args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return 'Arguments must be an object.';
+  for (const r of schema.required || []) if (args[r] === undefined || args[r] === null || args[r] === '') return `Missing "${r}".`;
+  for (const [k, v] of Object.entries(args)) {
+    const p = schema.properties?.[k];
+    if (!p || v === undefined) continue;
+    if (p.type === 'string' && typeof v !== 'string') return `"${k}" must be text.`;
+    if (p.type === 'string' && v.length > 4000) return `"${k}" is too long (max 4000 characters).`;
+    if (p.type === 'boolean' && typeof v !== 'boolean') return `"${k}" must be true or false.`;
+    if (p.type === 'array' && (!Array.isArray(v) || v.length > 50)) return `"${k}" must be a list (max 50).`;
+    if (p.type === 'array' && p.items?.type === 'string' && v.some((x) => typeof x !== 'string')) return `"${k}" must be a list of text.`;
+    if (p.enum && !p.enum.includes(v)) return `"${k}" must be one of: ${p.enum.join(', ')}.`;
+  }
+  return null;
+}
+
 export function callTool(store, name, args = {}) {
   const tool = TOOLS.find((t) => t.name === name);
   if (!tool) return { error: `Unknown tool ${name}` };
+  const bad = checkArgs(tool.inputSchema, args);
+  if (bad) return { error: bad };
   if (!store.exists() && name !== 'war_room_brief') return { error: 'No war room in this project yet. Run /war-room (or: war-room init) first.' };
   try {
     const out = tool.run(store, args);

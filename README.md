@@ -134,13 +134,14 @@ What the war room protects:
 - **No self-approval.** No tool lets an agent approve or answer for the founder. The guard blocks a chat that tries the CLI (`war-room approve` or `answer`) or edits `.warroom/` files by hand.
 - **The guard cannot be quietly switched off.** It also asks before a chat disables or uninstalls plugins, or edits Claude Code settings or hook files.
 - **Approvals are narrow.** Each approval covers one exact command, can be used once, and lapses after 30 minutes.
-- **The page is guarded.** It refuses non-localhost hosts (DNS rebinding) and non-JSON posts (cross-site forms). It sends no referrer, so the secret link never leaks.
+- **The page is guarded.** It refuses non-localhost hosts (DNS rebinding) and non-JSON posts (cross-site forms), cannot be framed by another site (clickjacking), runs under a strict content policy, and sends no referrer. `serve --lan --new-link` replaces a link you think has leaked.
+- **Inputs are checked on the server.** Every tool's types, allowed values and required fields are enforced, whatever the client sends.
 - **No secrets in memory.** Memory refuses anything that looks like a password, key or card number.
 - **No dependencies at all.**
 
 Known limits, stated honestly:
 
-- **The guard is pattern-based.** It catches the common forms of push, deploy, publish, delete, money, key and plugin commands. A determined agent can phrase a command it does not recognise. Keep your agent's own permission settings on as a second layer.
+- **The guard is pattern-based.** It catches the common forms of push, deploy, publish, delete, money, key and plugin commands, and any shell command that touches `.warroom`. A determined agent with shell access on your user account can still phrase a command it does not recognise, or build a file path piece by piece. Keep your agent's own permission settings on for shell commands as a second layer.
 - **The guard protects Claude Code only.** Codex, Cursor, Gemini and other agents rely on their own approval settings.
 - **`serve --lan` is plain HTTP on your local network.** Anyone on the same Wi-Fi who sees the link can use it. Use it on networks you trust, and stop it (Ctrl-C) when you are done.
 - **Agent names are self-declared.** The commander can record founder answers and goal choices relayed from chat, by design. The guard's approvals can only come from the page or your terminal.

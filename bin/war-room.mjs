@@ -15,7 +15,8 @@ const FOUNDER_YES = [
   // An agent must never answer for the founder or rewrite the war room's approvals and settings.
   // Switching the guard itself off is a founder decision too.
   [/\bclaude\s+(plugin|plugins|mcp)\s+(disable|uninstall|remove|rm)\b|\.claude\/(settings[^\s/]*\.json|plugins\/)|hooks\/hooks\.json/, 'switching off or changing the safety guard'],
-  [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer)\b|\.warroom\/(approvals|config|memory|goals)\.json/, 'approving, answering for the founder, or changing war-room settings'],
+  // Any shell command that touches .warroom or names the approvals file asks first (covers cd, cp, node -e …).
+  [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer|founder_answer|decide_goal)\b|\.warroom\b|\bapprovals\.json\b/, 'approving, answering for the founder, or changing war-room files'],
   [/\b(firebase|vercel|netlify|fly|wrangler|eas|amplify)\b[^|;&]*\b(deploy|publish|submit)\b|--prod\b/, 'deploy'],
   [/\b(npm|pnpm|yarn)\s+publish\b|\bgh\s+release\s+create\b|\bgh\s+repo\s+create\b/, 'publishing'],
   [/\b(altool|notarytool|fastlane|transporter)\b|\bxcrun\s+altool\b/, 'App Store / TestFlight upload'],
@@ -122,7 +123,7 @@ switch (cmd) {
     const port = Number(flag('port', 4818));
     const lan = rest.includes('--lan');
     let token = store.config().lanToken;
-    if (lan && !token) {
+    if (lan && (!token || rest.includes('--new-link'))) {
       token = crypto.randomBytes(18).toString('base64url');
       const cfgFile = `${store.root}/config.json`;
       fs.writeFileSync(cfgFile, JSON.stringify({ ...store.config(), lanToken: token }, null, 2));
@@ -156,7 +157,8 @@ switch (cmd) {
       const origin = req.headers.origin;
       if (req.method === 'POST' && origin && origin !== `http://${req.headers.host}`) return json(res, 403, { error: 'Cross-site request refused.' });
       if (req.method === 'GET' && url.pathname === '/api/version') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(version()); }
-      if (req.method === 'GET' && url.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(renderDashboard(store, { live: true })); }
+      if (req.method === 'GET' && url.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" }); return res.end(renderDashboard(store, { live: true })); }
       if (req.method === 'POST' && actions[url.pathname]) {
         let body = '';
         req.on('data', (d) => { body += d; if (body.length > 20000) req.destroy(); });
@@ -255,5 +257,5 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('war-room init [--project NAME] [--commander NAME] | status | dashboard | serve [--port 4818] [--lan] | approve --id A --yes|--no | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
+    console.log('war-room init [--project NAME] [--commander NAME] | status | dashboard | serve [--port 4818] [--lan] [--new-link] | approve --id A --yes|--no | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
 }

@@ -296,6 +296,22 @@ test('security: no self-approval, no tampering, no rebinding, no cross-site form
   assert.equal(await status({ path: '/', headers: { host: `evil.example:${port}` } }), 403, 'DNS-rebinding host refused');
   assert.equal(await status({ path: '/api/thought', method: 'POST', headers: { 'content-type': 'text/plain' } }, '{"text":"x"}'), 415, 'form-style post refused');
   assert.equal(await status({ path: '/' }), 200);
+  // The page cannot be framed (clickjacking) and runs under a strict content policy.
+  const headers = await new Promise((r) => http.get({ host: '127.0.0.1', port, path: '/' }, (res) => { res.resume(); r(res.headers); }));
+  assert.equal(headers['x-frame-options'], 'DENY');
+  assert.match(headers['content-security-policy'], /frame-ancestors 'none'/);
+  // Indirect shell routes to the approvals file ask too.
+  for (const command of ['cd .warroom && echo x > approvals.json', 'node -e "require(\'fs\').writeFileSync(\'.wa\'+\'rroom/approvals.json\',\'[]\')"', 'war-room call founder_answer \'{}\'']) {
+    assert.match(guard('Bash', { command }), /"ask"/, command);
+  }
+  assert.match(fs.readFileSync(path.join(ROOT, 'hooks/hooks.json'), 'utf8'), /NotebookEdit/);
+  // The server enforces every tool schema: bad enums, wrong types and missing fields are refused.
+  const v = connect(dir);
+  tc.after(() => v.close());
+  assert.match((await v.call('remember', { agent: 'x', kind: '<script>', text: 'hello world' })).error, /must be one of/);
+  assert.match((await v.call('remember', { agent: 'x', kind: 'fact', text: 42 })).error, /must be text/);
+  assert.match((await v.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'yolo', founderWords: 'x' })).error, /must be one of/);
+  assert.match((await v.call('report_done', { agent: 'x', taskId: 't1', summary: 'x' })).error, /Missing "evidence"/);
   // The secret link never leaves the page through the Referer header.
   const html = fs.readFileSync(spawnSync('node', [CLI, 'dashboard'], { cwd: dir, encoding: 'utf8' }).stdout.trim(), 'utf8');
   assert.match(html, /<meta name="referrer" content="no-referrer">/);

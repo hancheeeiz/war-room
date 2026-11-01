@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/war-room.mjs\" hook-session-start" }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Bash|Write|Edit|MultiEdit|mcp__.*", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/war-room.mjs\" hook-guard" }] }
+    ]
+  }
+}

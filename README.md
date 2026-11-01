@@ -9,6 +9,8 @@ A commander for solo builders who run several AI coding chats at once. One chat 
 - **Connects other agents.** Codex, Cursor, Gemini CLI or any agent that speaks MCP can join through the same connector.
 - **Asks for your yes before risky actions.** A guard hook asks first before git push, deploys, publishing, app store uploads, deleting data, money, keys and installing new skills.
 
+- **Starts with good rules.** Nine starter rules are built in, so you don't write them yourself: ask before money and before anything hard to undo, check before reporting, recall memory before asking, one plain question at a time, and more. Add your own rules on top.
+
 No goal, no war room: the session hook stays silent in projects that have no `.warroom/` folder.
 
 ## Use it in Claude Code
@@ -32,6 +34,18 @@ WAR_ROOM_AGENT=frontend claude --plugin-dir /path/to/war-room
 ```
 
 The worker calls `get_task_packet`, does only that, and finishes with `report_done` plus its evidence.
+
+## Starter rules
+
+Every war room starts with nine built-in rules that every chat sees in its briefing:
+
+```bash
+node /path/to/war-room/bin/war-room.mjs rules              # list them, plus your own
+node /path/to/war-room/bin/war-room.mjs rules --off s6 --yes  # switch one off on this computer
+node /path/to/war-room/bin/war-room.mjs rules --on s6 --yes
+```
+
+They live in the plugin's code, so a downloaded project cannot change or remove them, and the on/off choice is kept in `~/.config/war-room/config.json`. Your own rules come from the commander (`remember`, kind `rule` or `never`) and take effect once you approve them on the page.
 
 ## Connect other agents
 
@@ -137,7 +151,7 @@ What the war room protects (each one is a test in `test/`, written as the attack
 - **Your yes cannot be forged.** Approvals and confirmed rules are signed with a key that exists only on your computer. A copied, hand-edited or future-dated approval is ignored.
 - **Chats cannot write the rules.** A chat, or a web page or file a chat read, can only *propose* a rule. It reaches the other chats after you confirm it on the page, or with `war-room confirm-rules --yes` for rules you imported. Everything else in a chat's briefing is labelled as information, not instructions.
 
-- **No self-approval.** No tool lets an agent approve or answer for the founder. The guard blocks a chat that tries the CLI (`war-room approve` or `answer`) or edits `.warroom/` files by hand.
+- **No self-approval.** No tool lets an agent approve or answer for the founder. The guard blocks a chat that tries the CLI (`war-room approve`, `answer`, `confirm-rules` or `rules --off`), edits `.warroom/` files by hand, or touches `~/.config/war-room/`.
 - **The guard cannot be quietly switched off.** It also asks before a chat disables or uninstalls plugins, or edits Claude Code settings or hook files.
 - **Approvals are narrow.** Each approval covers one exact command, can be used once, and lapses after 30 minutes.
 - **The page is guarded.** It refuses non-localhost hosts (DNS rebinding) and non-JSON posts (cross-site forms), cannot be framed by another site (clickjacking), runs under a strict content policy, and sends no referrer. The phone link is new every time you start `serve --lan`, unless you pass `--keep-link`. The page loads nothing from other sites.

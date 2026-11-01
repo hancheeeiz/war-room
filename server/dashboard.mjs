@@ -1,5 +1,6 @@
 // War room page rendered from the store. Main tab = what matters today; Details tab = everything else.
 // Works as a plain file (answers become copyable commands) or through `war-room serve` (answers save instantly).
+import { starterRules } from './starter-rules.mjs';
 import { now } from './store.mjs';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -153,7 +154,8 @@ export function renderDashboard(store, { live = false } = {}) {
   const memoryMap = `<section class="card"><h2>Memory map · ${active.length} kept, stored automatically</h2>
     <div class="regions">${regions}</div>
     ${problemMap ? `<h2 style="margin-top:16px">Problems by chat</h2><div class="party">${problemMap}</div>` : ''}
-    <div style="margin-top:14px">${memCards || '<p class="note">Empty.</p>'}</div></section>`;
+    <div style="margin-top:14px">${memCards || '<p class="note">Empty.</p>'}</div>
+    <details class="mem" id="mem-starter"><summary>Starter rules (built in) <span class="meta">${starterRules().length}</span></summary>${starterRules().map((r) => `<div class="item"><div class="plain">${esc(r.text)}</div><div class="meta">${esc(r.id)} · built in</div></div>`).join('')}</details></section>`;
   const msgRows = messages.filter((m) => m.open).reverse().map((m) => `<div class="item"><div class="plain"><span class="tag">${esc(m.kind)}</span>${esc(m.text)}</div><div class="meta">#${m.id} · ${esc(m.from)} → ${esc(m.to)} · ${esc(m.date)}</div></div>`);
   const logRows = log.map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`);
 

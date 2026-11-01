@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
+import { STARTER_RULES, starterRules } from '../server/starter-rules.mjs';
 import { autoRemember, brief, callTool, consumeApproval, requestApproval, resolveApproval, ruleInForce } from '../server/tools.mjs';
 
 const [cmd, ...rest] = process.argv.slice(2);
@@ -16,7 +17,7 @@ const FOUNDER_YES = [
   // Switching the guard itself off is a founder decision too.
   [/\bclaude\s+(plugin|plugins|mcp)\s+(disable|uninstall|remove|rm)\b|\.claude\/(settings[^\s/]*\.json|plugins\/)|hooks\/hooks\.json/, 'switching off or changing the safety guard'],
   // Any shell command that touches .warroom or names the approvals file asks first (covers cd, cp, node -e …).
-  [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer|founder_answer|decide_goal)\b|\.warroom\b|\bapprovals\.json\b/, 'approving, answering for the founder, or changing war-room files'],
+  [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer|founder_answer|decide_goal|confirm-rules)\b|\bwar-room(\.mjs)?\b[^|;&\n]*\brules\s+--o(ff|n)\b|\.warroom\b|\bapprovals\.json\b|\.config\/war-room\b|\bWAR_ROOM_HOME\b/, 'approving, answering for the founder, or changing war-room files'],
   [/\b(firebase|vercel|netlify|fly|wrangler|eas|amplify)\b[^|;&]*\b(deploy|publish|submit)\b|--prod\b/, 'deploy'],
   [/\b(npm|pnpm|yarn)\s+publish\b|\bgh\s+release\s+create\b|\bgh\s+repo\s+create\b/, 'publishing'],
   [/\b(altool|notarytool|fastlane|transporter)\b|\bxcrun\s+altool\b/, 'App Store / TestFlight upload'],
@@ -36,7 +37,7 @@ function founderYesReason(input) {
     return hit && hit[1];
   }
   if (['Write', 'Edit', 'MultiEdit'].includes(name) && /(^|\/)\.env(\.|$)|\.(pem|p8|p12|key)$/.test(ti.file_path || '')) return 'passwords or keys (secret file)';
-  if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(name) && /(^|\/)\.warroom\//.test(ti.file_path || ti.notebook_path || '')) return 'editing war-room approvals, memory or settings by hand';
+  if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(name) && /(^|\/)(\.warroom|\.config\/war-room)\//.test(ti.file_path || ti.notebook_path || '')) return 'editing war-room approvals, memory or settings by hand';
   if (['Write', 'Edit', 'MultiEdit'].includes(name) && /(^|\/)\.claude\/(settings[^/]*\.json|plugins\/)|(^|\/)hooks\/hooks\.json$/.test(ti.file_path || '')) return 'switching off or changing the safety guard';
   if (name.startsWith('mcp__') && !name.includes('war-room') && RISKY_TOOL.test(name.split('__').pop())) return 'an outside action (send, delete, publish or pay)';
   return null;
@@ -186,6 +187,28 @@ switch (cmd) {
     if (!store.exists()) { console.log('No war room here.'); break; }
     const n = checkStale(store);
     console.log(n ? `${n} stale task alert(s) posted to the commander's inbox.` : 'No stale tasks.');
+    break;
+  }
+  case 'rules': {
+    // Built-in starter rules (on for everyone) plus the rules this project's founder confirmed.
+    const id = flag('off') || flag('on');
+    if (id) {
+      if (!STARTER_RULES.some((r) => r.id === id)) { console.log(`No starter rule ${id}.`); process.exitCode = 1; break; }
+      if (!rest.includes('--yes')) { console.log(`Add --yes to switch ${id} ${flag('off') ? 'off' : 'on'} on this computer.`); break; }
+      const f = `${userDir()}/config.json`;
+      const cfg = userConfig();
+      const off = new Set(cfg.startersOff || []);
+      if (flag('off')) off.add(id); else off.delete(id);
+      fs.writeFileSync(f, JSON.stringify({ ...cfg, startersOff: [...off] }, null, 2), { mode: 0o600 });
+      console.log(`Starter rule ${id} is now ${flag('off') ? 'off' : 'on'} for every war room on this computer.`);
+      break;
+    }
+    console.log('Starter rules (built in):');
+    for (const r of starterRules({ includeOff: true })) console.log(`  ${r.id}${r.off ? ' (off)' : ''} [${r.kind}] ${r.text}`);
+    const mine = store.exists() ? store.read('memory').filter(ruleInForce) : [];
+    console.log(`\nYour confirmed rules here: ${mine.length}`);
+    for (const m of mine) console.log(`  ${m.id} [${m.kind}] ${m.text}`);
+    console.log('\nSwitch a starter rule off: war-room rules --off s3 --yes · back on: --on s3 --yes');
     break;
   }
   case 'confirm-rules': {

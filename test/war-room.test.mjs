@@ -396,3 +396,27 @@ test('concurrent writers do not lose memory items', async () => {
   assert.equal(new Set(memory.map((m) => m.id)).size, 30);
   clients.forEach((c) => c.close());
 });
+
+test('starter rules: every new war room has them; only the founder can switch one off', async (tc) => {
+  const dir = tmpProject();
+  const run = (...args) => spawnSync('node', [CLI, ...args], { cwd: dir, encoding: 'utf8' }).stdout;
+  const briefing = run('brief', '--agent', 'worker');
+  for (const id of ['s1', 's2', 's3', 's8']) assert.match(briefing, new RegExp(`\\[${id}\\]`), id);
+  assert.match(run('dashboard') && fs.readFileSync(path.join(dir, '.warroom/dashboard.html'), 'utf8'), /Starter rules \(built in\)/);
+
+  assert.match(run('rules', '--off', 's3'), /--yes/, 'needs --yes');
+  assert.match(run('brief', '--agent', 'worker'), /\[s3\]/);
+  assert.match(run('rules', '--off', 's3', '--yes'), /now off/);
+  tc.after(() => run('rules', '--on', 's3', '--yes'));
+  assert.doesNotMatch(run('brief', '--agent', 'worker'), /\[s3\]/);
+  assert.match(run('rules'), /s3 \(off\)/);
+  run('rules', '--on', 's3', '--yes');
+  assert.match(run('brief', '--agent', 'worker'), /\[s3\]/);
+
+  // A planted project cannot switch them off, and a chat cannot do it (or sign rules) through the CLI.
+  fs.writeFileSync(path.join(dir, '.warroom/config.json'), JSON.stringify({ ...JSON.parse(fs.readFileSync(path.join(dir, '.warroom/config.json'), 'utf8')), startersOff: ['s1', 's2'] }));
+  assert.match(run('brief', '--agent', 'worker'), /\[s1\][\s\S]*\[s2\]/);
+  const guard = (command) => spawnSync('node', [CLI, 'hook-guard'], { cwd: dir, input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }), encoding: 'utf8' }).stdout;
+  for (const command of ['war-room rules --off s2 --yes', 'node bin/war-room.mjs confirm-rules --yes', 'cat ~/.config/war-room/secret', 'WAR_ROOM_HOME=/tmp/k war-room approve --id a1 --yes']) assert.match(guard(command), /"ask"|"deny"/, command);
+  assert.equal(guard('war-room rules'), '');
+});

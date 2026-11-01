@@ -169,6 +169,20 @@ test('watch pieces: hourly stale alert is deduped; founder answer lands instantl
   assert.ok(dec.some((m) => m.kind === 'decision' && m.text.includes('violet, always')));
 });
 
+test('dashboard renders with capped log and all tabs', async (tc) => {
+  const dir = tmpProject();
+  const c = connect(dir);
+  tc.after(() => c.close());
+  for (let i = 0; i < 14; i++) await c.call('remember', { agent: 'commander', kind: 'fact', text: `dashboard fact ${i} kiwi${i}`, keepBoth: true });
+  await c.call('propose_goal', { agent: 'commander', title: 'Ship the demo', founderWords: 'ship it', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
+  const out = spawnSync('node', [CLI, 'dashboard'], { cwd: dir, encoding: 'utf8' });
+  const html = fs.readFileSync(out.stdout.trim(), 'utf8');
+  assert.match(html, /Ship the demo/);
+  for (const tab of ['⚔ Goals', '🛡 Chats', '❓ Inbox', '🧠 Memory', '📜 Log']) assert.ok(html.includes(tab), tab);
+  assert.match(html, /show \d+ more/, 'long lists must fold behind show-more');
+  assert.ok(!html.includes('undefined'), 'no undefined leaks into the page');
+});
+
 test('messages between agents', async () => {
   const c = connect(tmpProject());
   await c.call('post_message', { agent: 'codex', to: 'commander', kind: 'question', text: 'Which file holds the tokens?' });

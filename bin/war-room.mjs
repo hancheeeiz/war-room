@@ -94,6 +94,14 @@ switch (cmd) {
     if (out.error) { console.error(out.error); process.exitCode = 1; } else console.log(out.text);
     break;
   }
+  case 'dashboard': {
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    const { renderDashboard } = await import('../server/dashboard.mjs');
+    const file = `${store.root}/dashboard.html`;
+    fs.writeFileSync(file, renderDashboard(store));
+    console.log(file);
+    break;
+  }
   case 'check-stale': {
     if (!store.exists()) { console.log('No war room here.'); break; }
     const n = checkStale(store);
@@ -111,15 +119,18 @@ switch (cmd) {
   case 'watch': {
     if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
     const mins = Number(flag('every', 60));
-    console.log(`Watching ${store.root}: stale check every ${mins} min; file changes notify instantly. Ctrl-C to stop.`);
-    const pass = () => { const n = checkStale(store); if (n) notify(store, `${n} stale task(s) — alert in the commander's inbox.`); };
+    const { renderDashboard } = await import('../server/dashboard.mjs');
+    const redraw = () => { try { fs.writeFileSync(`${store.root}/dashboard.html`, renderDashboard(store)); } catch {} };
+    console.log(`Watching ${store.root}: stale check every ${mins} min; file changes redraw the dashboard and notify instantly. Ctrl-C to stop.`);
+    const pass = () => { const n = checkStale(store); if (n) notify(store, `${n} stale task(s) — alert in the commander's inbox.`); redraw(); };
     pass();
     setInterval(pass, mins * 60e3);
     let debounce;
     fs.watch(store.root, (ev, f) => {
-      if (!f?.endsWith('.json') || f === 'config.json') return;
+      if (!f?.endsWith('.json') && f !== 'log.jsonl') return;
+      if (f === 'config.json' || f === 'lock') return;
       clearTimeout(debounce);
-      debounce = setTimeout(() => notify(store, `War room updated (${f}).`), 1500);
+      debounce = setTimeout(() => { redraw(); notify(store, `War room updated (${f}).`); }, 1500);
     });
     break;
   }
@@ -145,5 +156,5 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('war-room init [--project NAME] [--commander NAME] | status | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
+    console.log('war-room init [--project NAME] [--commander NAME] | status | dashboard | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
 }

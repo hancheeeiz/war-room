@@ -37,6 +37,9 @@ export function renderDashboard(store, { live = false } = {}) {
   const questions = memory.filter((m) => m.kind === 'question' && m.status === 'active');
   const reports = tasks.filter((t) => t.status === 'reported');
   const working = new Set(tasks.filter((t) => t.status === 'claimed').map((t) => t.agent));
+  const approvals = store.read('approvals').filter((x) => x.status === 'pending');
+  const judged = goals.filter((g) => g.status === 'judged');
+  const toApprove = approvals.length + judged.length;
 
   // ── MAIN TAB ─────────────────────────────────────────
   let goalPanel = '<section class="card"><h2>Main goal</h2><p class="note">No goal yet. Start one with <code>/war-room your goal</code>.</p></section>';
@@ -99,13 +102,28 @@ export function renderDashboard(store, { live = false } = {}) {
   const recent = log.slice(0, 5).map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`).join('');
   const recentCard = `<section class="card"><div class="card-h"><h2>Recent</h2><span class="meta">last 5</span></div>${recent || '<p class="note">Nothing yet.</p>'}<button class="link" type="button" data-go="details">See everything in Details →</button></section>`;
 
+  const approvalCards = [
+    ...approvals.map((x) => `<div class="ap" data-ap="${esc(x.id)}">
+      <div class="ap-main"><div class="qt">${esc(x.action)}</div><div class="note" style="margin:2px 0 0">${esc(x.why || '')}</div>
+      <div class="meta">${esc(x.id)} · ${esc(x.agent)} · ${esc(x.asked)}${x.command ? ` · <code>${esc(x.command)}</code>` : ''}</div></div>
+      <div class="ap-btns"><button class="send" type="button" data-approve="${esc(x.id)}" data-yes="1">Approve</button><button class="ghost" type="button" data-approve="${esc(x.id)}" data-yes="0">Deny</button></div>
+      <span class="note out"></span></div>`),
+    ...judged.map((g) => `<div class="ap">
+      <div class="ap-main"><div class="qt">Goal: ${esc(g.title)}</div>
+      <div class="note" style="margin:2px 0 0">Commander recommends <b>${esc(g.verdict?.recommendation)}</b> — ${esc(g.verdict?.reason || '')}${g.verdict?.strongerVersion && g.verdict.strongerVersion !== 'none' ? `. Improved version: ${esc(g.verdict.strongerVersion)}` : ''}</div></div>
+      <div class="ap-btns">${['keep', 'improve', 'later', 'drop'].map((c) => `<button class="${c === g.verdict?.recommendation ? 'send' : 'ghost'}" type="button" data-goal="${esc(g.id)}" data-choice="${c}">${c === 'improve' ? 'Improved' : c[0].toUpperCase() + c.slice(1)}</button>`).join('')}</div>
+      <span class="note out"></span></div>`),
+  ].join('');
+  const approveCard = toApprove ? `<section class="card approve"><div class="card-h"><h2>Approve</h2><span class="pill warn">${toApprove}</span></div>${approvalCards}
+    <p class="note">One approval covers that one action, once, for 30 minutes.</p></section>` : '';
+
   const kpis = [
     ['Main goal', `${goalPct}%`, main ? 'checks verified' : 'no goal yet', goalPct ? 'accent' : ''],
     ['Today', `${todayDone}/${todayTotal}`, 'daily goals done', todayTotal && todayDone === todayTotal ? 'ok' : ''],
     ['Chats', `${working.size}/${agents.length}`, 'working now', working.size ? 'ok' : ''],
-    ['Needs you', questions.length, questions.length ? 'questions to answer' : 'all clear', questions.length ? 'warn' : 'ok'],
+    ['Needs you', questions.length + toApprove, questions.length + toApprove ? `${toApprove} to approve · ${questions.length} to answer` : 'all clear', questions.length + toApprove ? 'warn' : 'ok'],
   ].map(([k, v, sub, tone]) => `<div class="kpi t-${tone}"><span class="kpi-k">${k}</span><b>${esc(v)}</b><span class="kpi-s">${esc(sub)}</span></div>`).join('');
-  const mainPane = `<div class="kpis">${kpis}</div>
+  const mainPane = `${approveCard}<div class="kpis">${kpis}</div>
     <div class="grid g-main"><div class="col">${goalPanel}</div><div class="col">${todayPanel}${chatsCard}</div></div>
     <div class="grid g-desk"><div class="col">${needs}</div><div class="col">${recentCard}</div></div>`;
 
@@ -147,7 +165,7 @@ export function renderDashboard(store, { live = false } = {}) {
       <div class="col" id="d-log"><section class="card"><div class="card-h"><h2>Full log</h2><span class="meta">${logRows.length}</span></div>${capped(logRows) || '<p class="note">Nothing yet.</p>'}</section></div></div>`;
 
   const pills = [
-    questions.length ? `<span class="pill warn">${questions.length} waiting on you</span>` : '<span class="pill ok">Nothing waits on you</span>',
+    questions.length + toApprove ? `<span class="pill warn">${questions.length + toApprove} waiting on you</span>` : '<span class="pill ok">Nothing waits on you</span>',
     `<span class="pill ${working.size ? 'ok' : ''}">${working.size} chat${working.size === 1 ? '' : 's'} working</span>`,
     reports.length ? `<span class="pill">${reports.length} to check</span>` : '',
   ].join('');
@@ -172,6 +190,11 @@ body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--font);pa
 .card-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:10px}.card-h h2{margin:0}
 .panel-k{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#a99be0;font-weight:600;margin-bottom:10px}
 .goal-panel{padding:18px 20px}.boss-name{font-size:16px;letter-spacing:.02em}
+.approve{border-color:#e2a64f88;box-shadow:0 0 0 1px #e2a64f22 inset,0 8px 30px #e2a64f14}
+.ap{display:grid;grid-template-columns:1fr auto;gap:10px 16px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}.ap:first-of-type{border-top:0;padding-top:0}
+.ap-btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.ap .out{grid-column:1/-1}
+.ghost{border:1px solid var(--line);background:var(--surface2);color:var(--ink);border-radius:10px;padding:9px 14px;font-weight:500}
+@media (max-width:560px){.ap{grid-template-columns:1fr}.ap-btns{justify-content:stretch}.ap-btns button{flex:1;padding:12px}}
 .divider{height:1px;background:var(--line);margin:16px 0}
 .jump{display:flex;gap:6px;flex-wrap:wrap}.jump a{font-size:13px;color:var(--muted);text-decoration:none;padding:5px 12px;border-radius:999px;background:var(--surface);border:1px solid var(--line)}.jump a:hover{color:var(--ink)}
 @media (max-width:860px){.g-main,.g-desk,.g-2{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.top{align-items:flex-start}}
@@ -241,6 +264,7 @@ ul.daily li{display:flex;gap:10px;align-items:flex-start;padding:6px 0}ul.daily 
 </div>
 <script>
 const LIVE=${live ? 'true' : 'false'};
+const TOKEN=new URLSearchParams(location.search).get('t')||'';
 function go(id){document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('on',p.id===id));document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.go===id));scrollTo(0,0);try{localStorage.setItem('wr-tab',id)}catch{}}
 document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
 try{const t=localStorage.getItem('wr-tab');if(t)go(t)}catch{}
@@ -248,12 +272,17 @@ document.querySelectorAll('[data-fill]').forEach(b=>b.onclick=()=>{b.closest('.q
 const shq=s=>"'"+s.replace(/'/g,"'\\\\''")+"'";
 async function post(path,body,out,fallback){
   if(!LIVE){out.className='note out';out.innerHTML='Copy and run in a terminal (or open this page with <code>war-room serve</code> to send from here):<br><code>'+fallback.replace(/</g,'&lt;')+'</code>';return false}
-  try{const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error||'failed');out.className='note out ok';out.textContent='Saved. The commander has it now.';return true}
+  try{const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json','x-war-room-token':TOKEN},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error||'failed');out.className='note out ok';out.textContent='Saved. The commander has it now.';return true}
   catch(e){out.className='note out bad';out.textContent='Not saved: '+e.message;return false}}
 document.querySelectorAll('[data-answer]').forEach(b=>b.onclick=async()=>{const q=b.closest('.q'),text=q.querySelector('textarea').value.trim(),out=q.querySelector('.out');if(!text){out.className='note out bad';out.textContent='Type an answer first.';return}
   b.disabled=true;if(await post('/api/answer',{questionId:b.dataset.answer,text},out,'war-room answer --question '+b.dataset.answer+' --text '+shq(text)))setTimeout(()=>location.reload(),900);else b.disabled=false});
 document.getElementById('thoughtSend').onclick=async e=>{const t=document.getElementById('thought'),out=e.target.parentElement.querySelector('.out'),text=t.value.trim();if(!text)return;
   e.target.disabled=true;if(await post('/api/thought',{text},out,'war-room call post_message '+shq(JSON.stringify({agent:'founder',to:'commander',kind:'info',text}))))t.value='';e.target.disabled=false};
-if(LIVE)setInterval(async()=>{try{const r=await fetch('/api/version');const v=await r.text();if(window.__v&&v!==window.__v&&!document.activeElement.matches('textarea'))location.reload();window.__v=v}catch{}},5000);
+document.querySelectorAll('[data-approve]').forEach(b=>b.onclick=async()=>{const box=b.closest('.ap'),out=box.querySelector('.out'),yes=b.dataset.yes==='1';
+  if(yes&&!confirm('Approve '+b.dataset.approve+'? It will run once.'))return;box.querySelectorAll('button').forEach(x=>x.disabled=true);
+  if(await post('/api/approve',{id:b.dataset.approve,yes},out,'war-room approve --id '+b.dataset.approve+(yes?' --yes':' --no')))setTimeout(()=>location.reload(),900);else box.querySelectorAll('button').forEach(x=>x.disabled=false)});
+document.querySelectorAll('[data-goal]').forEach(b=>b.onclick=async()=>{const box=b.closest('.ap'),out=box.querySelector('.out');box.querySelectorAll('button').forEach(x=>x.disabled=true);
+  if(await post('/api/goal',{goalId:b.dataset.goal,choice:b.dataset.choice},out,'war-room call decide_goal '+shq(JSON.stringify({agent:'commander',goalId:b.dataset.goal,choice:b.dataset.choice,founderWords:'chose on the page'}))))setTimeout(()=>location.reload(),900);else box.querySelectorAll('button').forEach(x=>x.disabled=false)});
+if(LIVE)setInterval(async()=>{try{const r=await fetch('/api/version',{headers:{'x-war-room-token':TOKEN}});const v=await r.text();if(window.__v&&v!==window.__v&&!document.activeElement.matches('textarea'))location.reload();window.__v=v}catch{}},5000);
 </script></body></html>`;
 }

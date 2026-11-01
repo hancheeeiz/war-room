@@ -65,6 +65,31 @@ node /path/to/war-room/bin/war-room.mjs dashboard    # or write a static .warroo
 
 Under `serve`, answers and thoughts save straight into the war room and the page refreshes itself when anything changes. The static file shows a copy-and-run command instead.
 
+## Approve from your phone
+
+Run the page in phone mode and open the printed link on your phone (same Wi-Fi):
+
+```bash
+node /path/to/war-room/bin/war-room.mjs serve --lan
+```
+
+The link carries a secret token; without it the page refuses everything. Keep the link private.
+
+The **Approve** card at the top of Main shows two kinds of request, each with buttons:
+
+- **Actions an agent asked to do**, such as a deploy, push, publish, payment, deletion or key use. Agents raise them with `request_approval`, or the guard raises them by itself.
+- **Judged goals waiting for your choice**: Keep / Improved / Later / Drop.
+
+Agents can ask (`request_approval`) and check (`check_approval`), but no tool lets an agent approve. Only your page or your terminal can: `war-room approve --id a1 --yes`.
+
+**Letting the guard act on phone approvals is opt-in.** Set `"remoteApprovals": true` in `.warroom/config.json`. With it on, the guard handles a risky command this way:
+
+1. Instead of waiting at a terminal prompt nobody is watching, it blocks the command and files an approval request.
+2. Once you approve it, that **exact** command may run **once**, within 30 minutes.
+3. A changed command needs a new approval.
+
+With it off, which is the default, the guard asks at the terminal as before.
+
 ## The watcher: one alarm, no polling
 
 The war room is event-driven — a finished task drops its report into the commander's inbox by itself, so nobody checks chats on a timer. The one exception is a chat that dies without reporting. For that, run the watcher:

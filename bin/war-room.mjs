@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { Store, now } from '../server/store.mjs';
-import { autoRemember, brief, callTool } from '../server/tools.mjs';
+import { autoRemember, brief, callTool, consumeApproval, requestApproval, resolveApproval } from '../server/tools.mjs';
 
 const [cmd, ...rest] = process.argv.slice(2);
 const flag = (name, dflt) => { const i = rest.indexOf(`--${name}`); return i >= 0 ? rest[i + 1] : dflt; };
@@ -60,7 +60,7 @@ function checkStale(store) {
 
 // The founder's own notifier (e.g. a push script). Set "notifyCommand" in .warroom/config.json; it gets the message as one argument.
 function notify(store, message) {
-  console.log(`${now()} ${message}`);
+  console.error(`${now()} ${message}`);
   const cmd = store.config().notifyCommand;
   if (cmd) execFile('/bin/sh', ['-c', `${cmd} "$1"`, 'warroom-notify', message], () => {});
 }
@@ -106,45 +106,84 @@ switch (cmd) {
     break;
   }
   case 'serve': {
-    // Local page where the founder answers and drops thoughts; saves straight into the war room. 127.0.0.1 only.
+    // The founder's page: answers, thoughts, approvals. 127.0.0.1 by default; --lan opens it to phones on the same
+    // Wi-Fi, and then every request must carry the secret link token.
     if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
     const http = await import('node:http');
+    const crypto = await import('node:crypto');
+    const os = await import('node:os');
     const { renderDashboard } = await import('../server/dashboard.mjs');
     const port = Number(flag('port', 4818));
-    const version = () => ['memory', 'goals', 'tasks', 'messages'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
+    const lan = rest.includes('--lan');
+    let token = store.config().lanToken;
+    if (lan && !token) {
+      token = crypto.randomBytes(18).toString('base64url');
+      const cfgFile = `${store.root}/config.json`;
+      fs.writeFileSync(cfgFile, JSON.stringify({ ...store.config(), lanToken: token }, null, 2));
+    }
+    const tokenOk = (got) => !lan || (typeof got === 'string' && got.length === token.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(token)));
+    const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
       + (fs.existsSync(`${store.root}/log.jsonl`) ? fs.statSync(`${store.root}/log.jsonl`).mtimeMs : 0);
-    const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+    const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
+    const actions = {
+      '/api/answer': (b) => callTool(store, 'founder_answer', { agent: store.config().commander, questionId: String(b.questionId), founderWords: String(b.text) }),
+      '/api/thought': (b) => {
+        const out = callTool(store, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: `Founder thought: ${b.text}` });
+        if (!out.error) autoRemember(store, { kind: 'idea', text: String(b.text), source: 'founder' });
+        return out;
+      },
+      '/api/approve': (b) => {
+        try {
+          const ap = resolveApproval(store, { id: String(b.id), yes: b.yes === true, by: 'founder (war-room page)' });
+          callTool(store, 'post_message', { agent: 'founder', to: ap.agent, kind: 'info', text: `${ap.id} ${ap.status} by the founder: ${ap.action}` });
+          return { text: 'ok' };
+        } catch (e) { return { error: e.message }; }
+      },
+      '/api/goal': (b) => callTool(store, 'decide_goal', { agent: store.config().commander, goalId: String(b.goalId), choice: String(b.choice), founderWords: `chose "${b.choice}" on the war-room page` }),
+    };
     http.createServer((req, res) => {
+      const url = new URL(req.url, 'http://x');
+      if (!tokenOk(url.searchParams.get('t') || req.headers['x-war-room-token'])) { res.writeHead(403); return res.end('Forbidden'); }
       const origin = req.headers.origin;
       if (req.method === 'POST' && origin && origin !== `http://${req.headers.host}`) return json(res, 403, { error: 'Cross-site request refused.' });
-      if (req.method === 'GET' && req.url === '/api/version') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(version()); }
-      if (req.method === 'GET' && (req.url === '/' || req.url.startsWith('/?'))) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(renderDashboard(store, { live: true })); }
-      if (req.method === 'POST' && ['/api/answer', '/api/thought'].includes(req.url)) {
+      if (req.method === 'GET' && url.pathname === '/api/version') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(version()); }
+      if (req.method === 'GET' && url.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(renderDashboard(store, { live: true })); }
+      if (req.method === 'POST' && actions[url.pathname]) {
         let body = '';
         req.on('data', (d) => { body += d; if (body.length > 20000) req.destroy(); });
         req.on('end', () => {
           let b = {};
           try { b = JSON.parse(body); } catch { return json(res, 400, { error: 'Bad request.' }); }
-          const text = String(b.text || '').trim();
-          if (!text) return json(res, 400, { error: 'Empty.' });
-          const out = req.url === '/api/answer'
-            ? callTool(store, 'founder_answer', { agent: store.config().commander, questionId: String(b.questionId), founderWords: text })
-            : callTool(store, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: `Founder thought: ${text}` });
-          if (!out.error && req.url === '/api/thought') autoRemember(store, { kind: 'idea', text, source: 'founder' });
+          if (['/api/answer', '/api/thought'].includes(url.pathname) && !String(b.text || '').trim()) return json(res, 400, { error: 'Empty.' });
+          const out = actions[url.pathname](b);
           if (out.error) return json(res, 400, { error: out.error });
-          notify(store, req.url === '/api/answer' ? `Founder answered ${b.questionId}.` : 'Founder sent a new thought.');
+          notify(store, `Founder used the war-room page (${url.pathname.slice(5)}).`);
           return json(res, 200, { ok: true });
         });
         return;
       }
       res.writeHead(404); res.end('Not found');
-    }).listen(port, '127.0.0.1', () => console.log(`War room page: http://127.0.0.1:${port}  (this computer only; Ctrl-C to stop)`));
+    }).listen(port, lan ? '0.0.0.0' : '127.0.0.1', () => {
+      console.log(`War room page: http://127.0.0.1:${port}/${lan ? `?t=${token}` : ''}`);
+      if (lan) {
+        for (const nets of Object.values(os.networkInterfaces())) for (const n of nets || []) if (n.family === 'IPv4' && !n.internal) console.log(`On your phone (same Wi-Fi): http://${n.address}:${port}/?t=${token}`);
+        console.log('Keep this link private: anyone on the same Wi-Fi with it can answer and approve.');
+      }
+    });
     break;
   }
   case 'check-stale': {
     if (!store.exists()) { console.log('No war room here.'); break; }
     const n = checkStale(store);
     console.log(n ? `${n} stale task alert(s) posted to the commander's inbox.` : 'No stale tasks.');
+    break;
+  }
+  case 'approve': {
+    // Founder approves or denies from any terminal (also over SSH from a phone).
+    try {
+      const ap = resolveApproval(store, { id: flag('id'), yes: rest.includes('--yes'), by: 'founder (cli)' });
+      console.log(`${ap.id} ${ap.status}: ${ap.action}`);
+    } catch (e) { console.error(e.message); process.exitCode = 1; }
     break;
   }
   case 'answer': {
@@ -184,6 +223,18 @@ switch (cmd) {
     let input = {};
     try { input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch {}
     const reason = founderYesReason(input);
+    const command = input.tool_input?.command;
+    // Remote approvals (opt-in): the founder approves this exact command on the war-room page, once, within 30 min.
+    if (reason && command && store.exists() && store.config().remoteApprovals === true) {
+      const ok = consumeApproval(store, command);
+      const out = ok
+        ? { permissionDecision: 'allow', permissionDecisionReason: `War room: founder approved ${ok.id} for this exact command at ${ok.decided}.` }
+        : (() => { const ap = requestApproval(store, { agent: process.env.WAR_ROOM_AGENT || 'unnamed chat', action: `${reason}: ${command}`, why: 'Asked by the guard before running it.', command });
+          notify(store, `Approval needed: ${ap.id} ${reason}`);
+          return { permissionDecision: 'deny', permissionDecisionReason: `War room: ${reason} needs the founder's yes. Request ${ap.id} is on the war-room page. Do other work; call check_approval with id ${ap.id} and run the exact same command again once it says approved.` }; })();
+      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...out } }));
+      break;
+    }
     if (reason) {
       process.stdout.write(JSON.stringify({ hookSpecificOutput: {
         hookEventName: 'PreToolUse',
@@ -195,5 +246,5 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('war-room init [--project NAME] [--commander NAME] | status | dashboard | serve [--port 4818] | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
+    console.log('war-room init [--project NAME] [--commander NAME] | status | dashboard | serve [--port 4818] [--lan] | approve --id A --yes|--no | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
 }

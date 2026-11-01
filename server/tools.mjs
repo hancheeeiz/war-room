@@ -29,6 +29,41 @@ export function autoRemember(store, { kind, text, source, tags = [] }) {
   });
 }
 
+// ── Approvals ───────────────────────────────────────────
+// Agents can ask and check; only the founder (the page or the CLI, never an MCP tool) can answer.
+export const APPROVAL_TTL_MIN = 30;
+
+export function requestApproval(store, { agent, action, why, command }) {
+  return store.update('approvals', (approvals) => {
+    const open = approvals.find((x) => x.status === 'pending' && x.command && x.command === command);
+    if (open) return open;
+    const ap = { id: nextId(approvals, 'a'), agent, action, why, command, status: 'pending', asked: now(), askedMs: Date.now() };
+    approvals.push(ap);
+    store.log({ agent, event: 'approval_requested', id: ap.id, text: action });
+    return ap;
+  });
+}
+
+export function resolveApproval(store, { id, yes, by = 'founder', note }) {
+  return store.update('approvals', (approvals) => {
+    const ap = approvals.find((x) => x.id === id);
+    if (!ap) throw new Refused(`No approval ${id}.`);
+    if (ap.status !== 'pending') throw new Refused(`${id} is already ${ap.status}.`);
+    Object.assign(ap, { status: yes ? 'approved' : 'denied', by, note, decided: now(), decidedMs: Date.now() });
+    store.log({ agent: by, event: yes ? 'approved' : 'denied', id, text: ap.action });
+    return ap;
+  });
+}
+
+// One-time use, exact command match, fresh. Used by the guard hook.
+export function consumeApproval(store, command) {
+  return store.update('approvals', (approvals) => {
+    const ap = approvals.find((x) => x.status === 'approved' && !x.used && x.command === command && Date.now() - x.decidedMs < APPROVAL_TTL_MIN * 60e3);
+    if (ap) { ap.used = now(); store.log({ agent: ap.agent, event: 'approval_used', id: ap.id }); }
+    return ap || null;
+  });
+}
+
 function cfgNum(store, key, dflt) {
   const v = store.config()[key];
   return Number.isFinite(v) ? v : dflt;
@@ -108,6 +143,8 @@ export function brief(store, agent) {
     if (waiting.length) out.push('', '## Reports waiting for you to verify', ...waiting.map((t) => `- ${t.id} by ${t.agent}: ${t.title}`));
     const qs = memory.filter((m) => m.kind === 'question' && m.status === 'active');
     if (qs.length) out.push('', '## Waiting on the founder', ...qs.map((m) => `- [${m.id}] ${m.text}`));
+    const aps = store.read('approvals').filter((x) => x.status === 'pending');
+    if (aps.length) out.push('', '## Approvals waiting on the founder', ...aps.map((x) => `- ${x.id} ${x.agent}: ${x.action}`));
     const stale = staleTasks(store, tasks);
     if (stale.length) out.push('', '## Stale tasks (claimed, no report — the chat may be dead; nudge it or reassign_task)', ...stale.map((t) => `- ${t.id} ${t.title} — claimed by ${t.agent} at ${t.claimed}`));
     const over = overBudget(store);
@@ -245,6 +282,25 @@ export const TOOLS = [
         store.log({ agent: a.agent, event: 'founder_answer', id: item.id });
         return item;
       });
+    },
+  },
+  {
+    name: 'request_approval',
+    description: 'Ask the founder to approve one exact action (a deploy, push, publish, payment, deletion or key use) from the war-room page, even when they are away from the computer. Put the exact shell command in "command" when there is one. One approval covers that one action once, for 30 minutes. You can never approve it yourself.',
+    inputSchema: { type: 'object', properties: { agent: AGENT, action: str('Plain words: what will happen.'), why: str('Why it is needed now.'), command: str('The exact command that will run, if any.') }, required: ['agent', 'action', 'why'] },
+    run: (store, a) => {
+      const ap = requestApproval(store, a);
+      return { approval: ap, next: `Wait for the founder. Check with check_approval id ${ap.id}; nothing happens until it says approved.` };
+    },
+  },
+  {
+    name: 'check_approval',
+    description: 'Check whether the founder approved or denied an approval request.',
+    inputSchema: { type: 'object', properties: { id: str('Approval id, e.g. a3.') }, required: ['id'] },
+    run: (store, a) => {
+      const ap = store.read('approvals').find((x) => x.id === a.id);
+      if (!ap) throw new Refused(`No approval ${a.id}.`);
+      return ap;
     },
   },
   {

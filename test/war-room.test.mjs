@@ -235,6 +235,44 @@ test('memory map auto-stores problems and ideas', async (tc) => {
   assert.match(mainPane, /Chats/, 'chats are on the main tab');
 });
 
+test('approvals: page buttons, phone token, guard uses an exact approval once', async (tc) => {
+  const dir = tmpProject();
+  const c = connect(dir);
+  tc.after(() => c.close());
+  // Agents can ask and check but there is no MCP tool that approves.
+  const names = (await c.rpc('tools/list', {})).result.tools.map((t) => t.name);
+  assert.ok(names.includes('request_approval') && names.includes('check_approval'));
+  assert.ok(!names.some((n) => /^(approve|resolve|decide)_approval/.test(n)), 'agents must not be able to approve');
+  const cfgFile = path.join(dir, '.warroom/config.json');
+  const guard = (command) => JSON.parse(spawnSync('node', [CLI, 'hook-guard'], { cwd: dir, input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }), encoding: 'utf8', env: { ...process.env, WAR_ROOM_DIR: dir, WAR_ROOM_AGENT: 'deployer' } }).stdout).hookSpecificOutput;
+  // Off by default: the guard still asks at the terminal.
+  assert.equal(guard('firebase deploy --only hosting').permissionDecision, 'ask');
+  // Opted in: no approval → deny + request created; approve on the page → allowed once, exact command only.
+  fs.writeFileSync(cfgFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfgFile, 'utf8')), remoteApprovals: true }));
+  const first = guard('firebase deploy --only hosting');
+  assert.equal(first.permissionDecision, 'deny');
+  assert.match(first.permissionDecisionReason, /a1/);
+  const port = 49000 + Math.floor(Math.random() * 900);
+  const srv = spawn('node', [CLI, 'serve', '--port', String(port), '--lan'], { cwd: dir });
+  tc.after(() => srv.kill());
+  await new Promise((r) => srv.stdout.once('data', r));
+  const token = JSON.parse(fs.readFileSync(cfgFile, 'utf8')).lanToken;
+  assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 403, 'phone mode needs the secret link');
+  const page = await (await fetch(`http://127.0.0.1:${port}/?t=${token}`)).text();
+  assert.match(page, /data-approve="a1"/);
+  const ok = await fetch(`http://127.0.0.1:${port}/api/approve`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-war-room-token': token }, body: JSON.stringify({ id: 'a1', yes: true }) });
+  assert.equal(ok.status, 200);
+  assert.equal(guard('firebase deploy --only hosting --force').permissionDecision, 'deny', 'a different command is not covered');
+  assert.equal(guard('firebase deploy --only hosting').permissionDecision, 'allow');
+  assert.equal(guard('firebase deploy --only hosting').permissionDecision, 'deny', 'an approval is used once');
+  // Goal decision from the page.
+  await c.call('propose_goal', { agent: 'commander', title: 'Widgets', founderWords: 'w', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
+  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', recommendation: 'later', reason: 'after launch' });
+  const g = await fetch(`http://127.0.0.1:${port}/api/goal`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-war-room-token': token }, body: JSON.stringify({ goalId: 'g1', choice: 'later' }) });
+  assert.equal(g.status, 200);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.warroom/goals.json'), 'utf8'))[0].status, 'later');
+});
+
 test('messages between agents', async () => {
   const c = connect(tmpProject());
   await c.call('post_message', { agent: 'codex', to: 'commander', kind: 'question', text: 'Which file holds the tokens?' });

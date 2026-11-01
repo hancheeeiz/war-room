@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const FILES = { memory: [], goals: [], tasks: [], messages: [] };
+const FILES = { memory: [], goals: [], tasks: [], messages: [], approvals: [] };
 
 export const MEMORY_KINDS = ['rule', 'never', 'decision', 'pref', 'fact', 'problem', 'idea', 'question'];
 

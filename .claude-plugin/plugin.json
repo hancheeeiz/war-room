@@ -1,7 +1,7 @@
 {
   "name": "war-room",
-  "version": "0.1.0",
-  "description": "A commander chat for solo builders: long-term memory, goal judging, milestones and progress bars, task packets for parallel chats, a connector any MCP agent can join, and a founder-yes guard on risky actions.",
+  "version": "0.2.0",
+  "description": "A commander chat for solo builders: long-term memory, goal judging, progress bars, worker chats it starts itself, debates between coding agents from different companies, and a founder-yes guard on risky actions.",
   "author": {
     "name": "hancheeeiz"
   },

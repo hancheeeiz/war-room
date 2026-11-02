@@ -2,6 +2,7 @@
 // Works as a plain file (answers become copyable commands) or through `war-room serve` (answers save instantly).
 import { starterRules } from './starter-rules.mjs';
 import { now } from './store.mjs';
+import { recipes, runStatus } from './agents.mjs';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
@@ -37,7 +38,10 @@ export function renderDashboard(store, { live = false } = {}) {
   const main = goals.find((g) => g.status === 'active') || goals[0];
   const questions = memory.filter((m) => m.kind === 'question' && m.status === 'active');
   const reports = tasks.filter((t) => t.status === 'reported');
-  const working = new Set(tasks.filter((t) => t.status === 'claimed').map((t) => t.agent));
+  const runs = store.read('runs');
+  const running = runs.filter((r) => runStatus(r) === 'running');
+  const working = new Set([...tasks.filter((t) => t.status === 'claimed').map((t) => t.agent), ...running.map((r) => r.name)]);
+  const debates = store.read('debates');
   const approvals = store.read('approvals').filter((x) => x.status === 'pending');
   const judged = goals.filter((g) => g.status === 'judged');
   const toApprove = approvals.length + judged.length;
@@ -91,12 +95,12 @@ export function renderDashboard(store, { live = false } = {}) {
     <div class="row"><button class="send" type="button" id="thoughtSend">Send</button><span class="note out"></span></div></div>
   </section>`;
 
-  const agents = [...new Set(tasks.map((t) => t.agent))];
+  const agents = [...new Set([...tasks.map((t) => t.agent), ...running.map((r) => r.name)])];
   const party = agents.map((a) => {
     const ts = tasks.filter((t) => t.agent === a);
     const live = ts.find((t) => t.status !== 'verified');
     return `<div class="hud-card ${working.has(a) ? 'working' : ''}"><div class="hud-who"><span class="dot"></span>${esc(a)}<small>${ts.filter((t) => t.status === 'verified').length}/${ts.length} done</small></div>
-      <div class="${live ? 'hud-do' : 'hud-last'}">${live ? `${esc(live.status)} · ${esc(live.title)}` : 'Idle'}</div>${live?.model ? `<div class="hud-last">${esc(live.model)} model</div>` : ''}</div>`;
+      <div class="${live ? 'hud-do' : 'hud-last'}">${live ? `${esc(live.status)} · ${esc(live.title)}` : 'Idle'}</div>${(() => { const r = running.find((x) => x.name === a); return r ? `<div class="hud-last">${esc(r.agent)}${r.model ? ` ${esc(r.model)}` : ''} · running since ${esc(r.started.slice(11))}</div>` : live?.model ? `<div class="hud-last">${esc(live.model)} model</div>` : ''; })()}</div>`;
   }).join('');
   const chatsCard = `<section class="card"><div class="card-h"><h2>Chats</h2><span class="meta">${working.size} working</span></div>${party ? `<div class="party">${party}</div>` : '<p class="note">No chats have work yet.</p>'}</section>`;
 
@@ -119,6 +123,21 @@ export function renderDashboard(store, { live = false } = {}) {
   const approveCard = toApprove ? `<section class="card approve"><div class="card-h"><h2>Approve</h2><span class="pill warn">${toApprove}</span></div>${approvalCards}
     <p class="note">One approval covers that one action, once, for 30 minutes.</p></section>` : '';
 
+  // Debates: every agent's final answer side by side, with the company behind it.
+  const company = (seat) => recipes()[String(seat).split(':')[0]]?.company || '';
+  const debateCard = (d, full) => {
+    const last = d.results?.[d.results.length - 1] || [];
+    const finals = d.finals || last.map((a) => ({ seat: a.seat, final: a.ok ? (a.final || '…') : a.text }));
+    const seats = finals.length ? finals : d.seats.map((s) => ({ seat: s.seat, final: d.status === 'done' ? '' : 'thinking…' }));
+    const rounds = full ? (d.results || []).map((round, i) => `<details class="ms"><summary><span class="tag">R${i + 1}</span>${i ? 'After reading the others' : 'Blind answers'}</summary>${round.map((a) => `<div class="item"><div class="meta">${esc(a.seat)} · ${esc(company(a.seat))}${a.ok ? '' : ' · failed'}</div><div class="plain pre">${esc(a.text)}</div></div>`).join('')}</details>`).join('') : '';
+    return `<section class="card debate"><div class="card-h"><h2>Debate ${esc(d.id)} · ${esc(d.status)}</h2><span class="meta">${esc(d.created)}</span></div>
+      <div class="goal">${esc(d.question)}</div>
+      ${d.companies?.length < 2 ? '<p class="note">All seats are from one company, so agreement here is weak evidence.</p>' : ''}
+      <div class="seats">${seats.map((f) => `<div class="hud-card ${d.status === 'running' ? 'working' : ''}"><div class="hud-who"><span class="dot"></span>${esc(f.seat)}<small>${esc(company(f.seat))}</small></div><div class="hud-last">${esc(f.final)}</div></div>`).join('')}</div>${rounds}</section>`;
+  };
+  const latestDebate = debates[debates.length - 1];
+  const mainDebate = latestDebate && (latestDebate.status !== 'done' || String(latestDebate.finished || latestDebate.created).startsWith(today)) ? debateCard(latestDebate, false) : '';
+
   const kpis = [
     ['Main goal', `${goalPct}%`, main ? 'checks verified' : 'no goal yet', goalPct ? 'accent' : ''],
     ['Today', `${todayDone}/${todayTotal}`, 'daily goals done', todayTotal && todayDone === todayTotal ? 'ok' : ''],
@@ -127,6 +146,7 @@ export function renderDashboard(store, { live = false } = {}) {
   ].map(([k, v, sub, tone]) => `<div class="kpi t-${tone}"><span class="kpi-k">${k}</span><b>${esc(v)}</b><span class="kpi-s">${esc(sub)}</span></div>`).join('');
   const mainPane = `${approveCard}<div class="kpis">${kpis}</div>
     <div class="grid g-main"><div class="col">${goalPanel}</div><div class="col">${todayPanel}${chatsCard}</div></div>
+    ${mainDebate}
     <div class="grid g-desk"><div class="col">${needs}</div><div class="col">${recentCard}</div></div>`;
 
   // ── DETAILS TAB ─────────────────────────────────────
@@ -161,8 +181,9 @@ export function renderDashboard(store, { live = false } = {}) {
   const logRows = log.map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`);
 
   const details = `
-    <nav class="jump"><a href="#d-memory">Memory map</a><a href="#d-goals">Goals</a><a href="#d-tasks">Tasks</a><a href="#d-msgs">Messages</a><a href="#d-log">Log</a></nav>
+    <nav class="jump"><a href="#d-memory">Memory map</a><a href="#d-goals">Goals</a><a href="#d-tasks">Tasks</a><a href="#d-debates">Debates</a><a href="#d-msgs">Messages</a><a href="#d-log">Log</a></nav>
     <div id="d-memory">${memoryMap}</div>
+    <div id="d-debates">${debates.slice().reverse().slice(0, 10).map((d) => debateCard(d, true)).join('') || '<section class="card"><h2>Debates</h2><p class="note">None yet. Ask the commander to put a question to several agents.</p></section>'}</div>
     <div class="grid g-2"><div class="col" id="d-goals">${goalCards || '<section class="card"><h2>Goals</h2><p class="note">None yet.</p></section>'}</div>
       <div class="col" id="d-tasks"><section class="card"><div class="card-h"><h2>Tasks</h2><span class="meta">${taskRows.length}</span></div>${capped(taskRows) || '<p class="note">None yet.</p>'}</section></div></div>
     <div class="grid g-2"><div class="col" id="d-msgs"><section class="card"><div class="card-h"><h2>Open messages</h2><span class="meta">${msgRows.length}</span></div>${capped(msgRows) || '<p class="note">None.</p>'}</section></div>
@@ -257,6 +278,7 @@ ul.daily li{display:flex;gap:10px;align-items:flex-start;padding:6px 0}ul.daily 
 .region b{font-size:22px;font-family:var(--mono)}.region span{font-size:12px;color:var(--muted)}
 .region.t-bad b{color:var(--bad)}.region.t-warn b{color:var(--warn)}.region.t-ok b{color:var(--ok)}.region.t-accent b{color:var(--accent)}
 .dot.bad{background:var(--bad)}
+.seats{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-top:12px}.pre{white-space:pre-wrap;font-size:13.5px}
 .hud-do{margin-top:4px;color:#ffb454;overflow-wrap:anywhere}.hud-last{margin-top:4px;color:var(--muted);overflow-wrap:anywhere}
 @keyframes pulse{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}

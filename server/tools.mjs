@@ -1,4 +1,5 @@
 // War room tools. The MCP server and the CLI both call these, so every agent sees the same rules.
+import { createDebate, launchDebate, startWorker, stoppedWorkers } from './agents.mjs';
 import { starterRules } from './starter-rules.mjs';
 import { MEMORY_KINDS, nextId, now, overlap, sign, verify, words } from './store.mjs';
 
@@ -168,6 +169,8 @@ export function brief(store, agent) {
     if (unconfirmed.length) out.push('', `## ${unconfirmed.length} rule(s) NOT in force (not confirmed by the founder on this computer)`, ...unconfirmed.slice(0, 5).map((m) => `- [${m.id}] ${m.text.slice(0, 120)}`));
     const aps = store.read('approvals').filter((x) => x.status === 'pending');
     if (aps.length) out.push('', '## Approvals waiting on the founder', ...aps.map((x) => `- ${x.id} ${x.agent}: ${x.action}`));
+    const stopped = stoppedWorkers(store);
+    if (stopped.length) out.push('', '## Worker chats that stopped without reporting (read the log; it may be waiting for an approval, then it restarts by itself)', ...stopped.map((r) => `- ${r.name} (${r.agent}${r.model ? ` ${r.model}` : ''}) · log ${r.log}`));
     const stale = staleTasks(store, tasks);
     if (stale.length) out.push('', '## Stale tasks (claimed, no report — the chat may be dead; nudge it or reassign_task)', ...stale.map((t) => `- ${t.id} ${t.title} — claimed by ${t.agent} at ${t.claimed}`));
     const over = overBudget(store);
@@ -599,6 +602,43 @@ export const TOOLS = [
   },
 ];
 
+// ── Other agents: worker chats and debates ──────────
+TOOLS.push(
+  {
+    name: 'start_worker',
+    description: 'Commander only: start a worker chat in the background (no terminal needed). It briefs itself, takes its task packet, works, and its report_done lands in your inbox. agent: claude (default; protected by the guard), codex, gemini or cursor if installed. Create its task first with create_task (assignTo = the same name).',
+    inputSchema: { type: 'object', properties: { agent: AGENT, name: str('Worker name, the same as the task\'s assignTo, e.g. "frontend".'), use: str('Which coding agent runs it: claude, codex, gemini or cursor.'), model: str('Optional model, e.g. "sonnet" for cheap mechanical work, "opus" for hard work.') }, required: ['agent', 'name'] },
+    run: (store, a) => {
+      needCommander(store, a.agent);
+      const run = startWorker(store, { name: a.name, agent: a.use || 'claude', model: a.model });
+      return { run, next: `Worker ${a.name} is running (${run.id}). Its report arrives in your inbox; you do not need to check on it.` };
+    },
+  },
+  {
+    name: 'start_debate',
+    description: 'Commander only: put one question to several coding agents, ideally from different companies (Claude, Codex, Gemini, Cursor). Each answers blind, then each reads the others\' answers and argues; the founder sees every answer side by side on the page. Every seat is a paid model call, so only start one after the founder said yes; quote their words in founderSaid. Runs in the background; read it with debate_result.',
+    inputSchema: { type: 'object', properties: { agent: AGENT, question: str('One clear question, with the context the agents need.'), seats: strList('Optional, e.g. ["claude:opus","codex","gemini"]. Default: one seat per installed company.'), rounds: { type: 'number', description: '1 = blind answers only, 2 = blind answers then argue (default).' }, founderSaid: str('The founder\'s yes, quoted.') }, required: ['agent', 'question', 'founderSaid'] },
+    run: (store, a) => {
+      needCommander(store, a.agent);
+      const d = createDebate(store, { question: a.question, seats: a.seats, rounds: Number(a.rounds) || 2, by: a.agent });
+      launchDebate(store, d.id);
+      const oneCompany = d.companies.length < 2;
+      return { debate: d.id, seats: d.seats.map((s) => s.seat), companies: d.companies, warning: oneCompany ? 'All seats come from one company: agreement between them is weak evidence. Connect another agent (war-room doctor) for a real argument.' : undefined, next: `Running in the background. Call debate_result with id ${d.id} later.` };
+    },
+  },
+  {
+    name: 'debate_result',
+    description: 'Read a debate: status, each agent\'s answers per round, and their final one-line answers.',
+    inputSchema: { type: 'object', properties: { id: str('Debate id, e.g. d1. Leave out for the latest.') } },
+    run: (store, a) => {
+      const ds = store.read('debates');
+      const d = a.id ? ds.find((x) => x.id === a.id) : ds[ds.length - 1];
+      if (!d) throw new Refused(a.id ? `No debate ${a.id}.` : 'No debates yet.');
+      return d;
+    },
+  },
+);
+
 // Enforce each tool's schema on the server: clients are not trusted to have checked types, enums or required fields.
 function checkArgs(schema, args) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return 'Arguments must be an object.';
@@ -609,6 +649,7 @@ function checkArgs(schema, args) {
     if (p.type === 'string' && typeof v !== 'string') return `"${k}" must be text.`;
     if (p.type === 'string' && v.length > 4000) return `"${k}" is too long (max 4000 characters).`;
     if (p.type === 'boolean' && typeof v !== 'boolean') return `"${k}" must be true or false.`;
+    if (p.type === 'number' && (typeof v !== 'number' || !Number.isFinite(v))) return `"${k}" must be a number.`;
     if (p.type === 'array' && (!Array.isArray(v) || v.length > 50)) return `"${k}" must be a list (max 50).`;
     if (p.type === 'array' && p.items?.type === 'string' && v.some((x) => typeof x !== 'string')) return `"${k}" must be a list of text.`;
     if (p.enum && !p.enum.includes(v)) return `"${k}" must be one of: ${p.enum.join(', ')}.`;
@@ -622,10 +663,13 @@ export function callTool(store, name, args = {}) {
   const bad = checkArgs(tool.inputSchema, args);
   if (bad) return { error: bad };
   if (!store.exists() && name !== 'war_room_brief') return { error: 'No war room in this project yet. Run /war-room (or: war-room init) first.' };
+  const done = (out) => ({ text: typeof out === 'string' ? out : JSON.stringify(out, null, 2) });
+  const failed = (e) => ({ error: e instanceof Refused ? e.message : `War room error: ${e.message}` });
   try {
     const out = tool.run(store, args);
-    return { text: typeof out === 'string' ? out : JSON.stringify(out, null, 2) };
+    // Tools that start other processes are async; callers that may reach them await the result.
+    return out instanceof Promise ? out.then(done, failed) : done(out);
   } catch (e) {
-    return { error: e instanceof Refused ? e.message : `War room error: ${e.message}` };
+    return failed(e);
   }
 }

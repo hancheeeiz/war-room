@@ -1,0 +1,12 @@
+{
+  "name": "war-room",
+  "owner": { "name": "hancheeeiz" },
+  "metadata": { "description": "A commander chat for people who run several AI coding chats at once." },
+  "plugins": [
+    {
+      "name": "war-room",
+      "source": "./",
+      "description": "Commander chat with long-term memory, goal judging, progress bars, worker chats, debates between coding agents from different companies, and a founder-yes guard on risky actions."
+    }
+  ]
+}

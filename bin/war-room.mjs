@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // War room CLI: init, status, brief, call, and the hooks (session-start briefing, founder-yes guard).
 import fs from 'node:fs';
+import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
+import { resumeAfterApproval } from '../server/agents.mjs';
 import { STARTER_RULES, starterRules } from '../server/starter-rules.mjs';
 import { autoRemember, brief, callTool, consumeApproval, requestApproval, resolveApproval, ruleInForce } from '../server/tools.mjs';
 
@@ -18,13 +20,16 @@ const FOUNDER_YES = [
   [/\bclaude\s+(plugin|plugins|mcp)\s+(disable|uninstall|remove|rm)\b|\.claude\/(settings[^\s/]*\.json|plugins\/)|hooks\/hooks\.json/, 'switching off or changing the safety guard'],
   // Any shell command that touches .warroom or names the approvals file asks first (covers cd, cp, node -e …).
   [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer|founder_answer|decide_goal|confirm-rules)\b|\bwar-room(\.mjs)?\b[^|;&\n]*\brules\s+--o(ff|n)\b|\.warroom\b|\bapprovals\.json\b|\.config\/war-room\b|\bWAR_ROOM_HOME\b/, 'approving, answering for the founder, or changing war-room files'],
-  [/\b(firebase|vercel|netlify|fly|wrangler|eas|amplify)\b[^|;&]*\b(deploy|publish|submit)\b|--prod\b/, 'deploy'],
-  [/\b(npm|pnpm|yarn)\s+publish\b|\bgh\s+release\s+create\b|\bgh\s+repo\s+create\b/, 'publishing'],
+  [/\b(firebase|vercel|netlify|fly|flyctl|wrangler|eas|amplify|gcloud|aws|heroku|render)\b[^|;&]*\b(deploy|publish|submit)\b|--prod\b|\bkubectl\s+(apply|delete|rollout|scale)\b|\bterraform\s+(apply|destroy)\b|\bdocker\s+push\b|\bsupabase\s+(db\s+push|functions\s+deploy)\b|\brailway\s+up\b/, 'deploy'],
+  [/\b(npm|pnpm|yarn|bun)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b|\bpod\s+trunk\s+push\b|\bgh\s+release\s+(create|upload|edit)\b|\bgh\s+repo\s+(create|edit|rename|archive)\b|\bgh\s+pr\s+merge\b/, 'publishing'],
+  // Connecting another agent changes that tool's own settings files.
+  [/\bwar-room(\.mjs)?\b[^|;&\n]*\bconnect\b/, 'connecting another agent (changes its settings)'],
+  [/\bosascript\b[^|;&]*\b(send|Messages|Mail)\b|\b(sendmail|mailx?)\s|hooks\.slack\.com|discord(app)?\.com\/api\/webhooks|api\.telegram\.org|\bgh\s+(issue|pr)\s+(comment|create)\b/, 'sending messages for the founder'],
   [/\b(altool|notarytool|fastlane|transporter)\b|\bxcrun\s+altool\b/, 'App Store / TestFlight upload'],
-  [/\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r|\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|push\s+--force)|\bdrop\s+(table|database)\b|\bfirestore:delete\b|\bgsutil\s+rm\b/i, 'deleting data'],
+  [/\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-[a-z]*r\b|--recursive\b)|\bfind\b[^|;&]*\s-delete\b|\brsync\b[^|;&]*--delete|\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|push\s+--force|branch\s+-D)\b|\b(drop|truncate)\s+(table|database|schema)\b|\bdelete\s+from\b|\bfirestore:delete\b|\b(gsutil|gcloud\s+storage|aws\s+s3)\s+rm\b|\bdropdb\b/i, 'deleting data'],
   [/api\.stripe\.com|\bstripe\s+(charges|payment|refunds|transfers|payouts)|\brevenuecat\b.*\b(grant|refund)\b/i, 'money'],
   [/\bsecurity\s+(find|add|delete)-(generic|internet)-password\b|\bgcloud\s+auth\b|\bgh\s+auth\b|\bnpm\s+(login|token)\b/, 'passwords or keys'],
-  [/\b(curl|wget)\b[^|]*\|\s*(ba|z)?sh\b/, 'running downloaded code'],
+  [/\|\s*(sudo\s+)?(ba|z|da|k)?sh\b|\b(ba|z)?sh\s+<\s*\(\s*(curl|wget)|\bbase64\s+(-d|--decode|-D)\b[^;&]*\|/, 'running downloaded or decoded code'],
   [/\bclaude\s+(plugin|mcp)\s+(add|install)\b|\bnpx\s+skills?\s+add\b/, 'installing a skill, plugin or connector'],
 ];
 const RISKY_TOOL = /(deploy|publish|delete|remove|trash|send_message|send_email|charge|payment|refund|purchase|transfer)/i;
@@ -33,7 +38,11 @@ function founderYesReason(input) {
   const name = input.tool_name || '';
   const ti = input.tool_input || {};
   if (name === 'Bash') {
-    const hit = FOUNDER_YES.find(([re]) => re.test(ti.command || ''));
+    const command = ti.command || '';
+    // Looking at the war room's files is fine; only changing them needs the founder. A plain ls/cat/head/tail/grep/wc
+    // with no redirect, pipe, chain or substitution cannot change anything, and the per-user secret stays guarded.
+    const readOnly = /^\s*(ls|cat|head|tail|wc|grep)\b[^;&|<>`$\n]*$/.test(command) && !/\.config\/war-room|WAR_ROOM_HOME/.test(command);
+    const hit = FOUNDER_YES.find(([re, why]) => re.test(command) && !(readOnly && why.startsWith('approving, answering')));
     return hit && hit[1];
   }
   if (['Write', 'Edit', 'MultiEdit'].includes(name) && /(^|\/)\.env(\.|$)|\.(pem|p8|p12|key)$/.test(ti.file_path || '')) return 'passwords or keys (secret file)';
@@ -79,6 +88,99 @@ function bar(pct, width = 20) {
   return `${'█'.repeat(n)}${'░'.repeat(width - n)} ${String(pct).padStart(3)}%`;
 }
 
+// The founder's page: answers, thoughts, approvals. 127.0.0.1 by default; --lan opens it to phones on the same
+// Wi-Fi, and then every request must carry the secret link token.
+async function serve(opts = {}) {
+  const http = await import('node:http');
+  const crypto = await import('node:crypto');
+  const os = await import('node:os');
+  const { renderDashboard } = await import('../server/dashboard.mjs');
+  const port = Number(opts.port ?? flag('port', 4818));
+  const lan = opts.lan ?? rest.includes('--lan');
+  // A fresh secret link on every start; --keep-link reuses the last one (kept in the user folder, never the project).
+  const keepFile = `${userDir()}/lan-link`;
+  let token = (opts.keepLink ?? rest.includes('--keep-link')) && fs.existsSync(keepFile) ? fs.readFileSync(keepFile, 'utf8').trim() : crypto.randomBytes(24).toString('base64url');
+  if (lan) fs.writeFileSync(keepFile, token, { mode: 0o600 });
+  const tokenOk = (got) => !lan || (typeof got === 'string' && got.length === token.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(token)));
+  const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals', 'runs', 'debates'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
+    + (fs.existsSync(`${store.root}/log.jsonl`) ? fs.statSync(`${store.root}/log.jsonl`).mtimeMs : 0);
+  const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
+  const actions = {
+    '/api/answer': (b) => callTool(store, 'founder_answer', { agent: store.config().commander, questionId: String(b.questionId), founderWords: String(b.text) }),
+    '/api/thought': (b) => {
+      const out = callTool(store, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: `Founder thought: ${b.text}` });
+      if (!out.error) autoRemember(store, { kind: 'idea', text: String(b.text), source: 'founder' });
+      return out;
+    },
+    '/api/approve': (b) => {
+      try {
+        const ap = resolveApproval(store, { id: String(b.id), yes: b.yes === true, by: 'founder (war-room page)' });
+        callTool(store, 'post_message', { agent: 'founder', to: ap.agent, kind: 'info', text: `${ap.id} ${ap.status} by the founder: ${ap.action}` });
+        resumeAfterApproval(store, ap);
+        return { text: 'ok' };
+      } catch (e) { return { error: e.message }; }
+    },
+    '/api/goal': (b) => callTool(store, 'decide_goal', { agent: store.config().commander, goalId: String(b.goalId), choice: String(b.choice), founderWords: `chose "${b.choice}" on the war-room page` }),
+  };
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://x');
+    if (!tokenOk(url.searchParams.get('t') || req.headers['x-war-room-token'])) { res.writeHead(403); return res.end('Forbidden'); }
+    // A local page must only answer to localhost names, or a malicious site could rebind its DNS to it.
+    if (!lan && !new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]).has(req.headers.host)) { res.writeHead(403); return res.end('Forbidden host'); }
+    if (req.method === 'POST' && !String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'JSON only.' });
+    const origin = req.headers.origin;
+    if (req.method === 'POST' && origin && origin !== `http://${req.headers.host}`) return json(res, 403, { error: 'Cross-site request refused.' });
+    if (req.method === 'GET' && url.pathname === '/api/version') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(version()); }
+    if (req.method === 'GET' && url.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" }); return res.end(renderDashboard(store, { live: true })); }
+    if (req.method === 'POST' && actions[url.pathname]) {
+      let body = '';
+      req.on('data', (d) => { body += d; if (body.length > 20000) req.destroy(); });
+      req.on('end', () => {
+        let b = {};
+        try { b = JSON.parse(body); } catch { return json(res, 400, { error: 'Bad request.' }); }
+        if (['/api/answer', '/api/thought'].includes(url.pathname) && !String(b.text || '').trim()) return json(res, 400, { error: 'Empty.' });
+        const out = actions[url.pathname](b);
+        if (out.error) return json(res, 400, { error: out.error });
+        notify(store, `Founder used the war-room page (${url.pathname.slice(5)}).`);
+        return json(res, 200, { ok: true });
+      });
+      return;
+    }
+    res.writeHead(404); res.end('Not found');
+  });
+  server.on('error', (e) => {
+    console.error(e.code === 'EADDRINUSE' ? `Port ${port} is busy: the war room page is probably already running (open http://127.0.0.1:${port}/), or pick another with --port.` : e.message);
+    process.exit(1);
+  });
+  server.listen(port, lan ? '0.0.0.0' : '127.0.0.1', () => {
+    opts.onListen?.({ port, lan, token });
+    console.log(`War room page: http://127.0.0.1:${port}/${lan ? `?t=${token}` : ''}`);
+    if (lan) {
+      for (const nets of Object.values(os.networkInterfaces())) for (const n of nets || []) if (n.family === 'IPv4' && !n.internal) console.log(`On your phone (same Wi-Fi): http://${n.address}:${port}/?t=${token}`);
+      console.log('Keep this link private: anyone on the same Wi-Fi with it can answer and approve.');
+    }
+  });
+}
+
+// Stale-task alarm plus instant notify on war-room file changes. No polling of chats.
+async function startWatch(opts = {}) {
+  const mins = Number(opts.every ?? flag('every', 60));
+  const { renderDashboard } = await import('../server/dashboard.mjs');
+  const redraw = () => { try { fs.writeFileSync(`${store.root}/dashboard.html`, renderDashboard(store)); } catch {} };
+  console.log(`Watching ${store.root}: stale check every ${mins} min; file changes redraw the dashboard and notify instantly. Ctrl-C to stop.`);
+  const pass = () => { const n = checkStale(store); if (n) notify(store, `${n} stale task(s) — alert in the commander's inbox.`); redraw(); };
+  pass();
+  setInterval(pass, mins * 60e3);
+  let debounce;
+  fs.watch(store.root, (ev, f) => {
+    if (!f?.endsWith('.json') && f !== 'log.jsonl') return;
+    if (['config.json', 'lock', 'up.json'].includes(f)) return;
+    clearTimeout(debounce);
+    debounce = setTimeout(() => { redraw(); notify(store, `War room updated (${f}).`); }, 1500);
+  });
+}
+
 switch (cmd) {
   case 'init': {
     const cfg = store.init({ project: flag('project'), commander: flag('commander', 'commander') });
@@ -102,7 +204,7 @@ switch (cmd) {
     console.log(brief(store, flag('agent', process.env.WAR_ROOM_AGENT)));
     break;
   case 'call': {
-    const out = callTool(store, rest[0], rest[1] ? JSON.parse(rest[1]) : {});
+    const out = await callTool(store, rest[0], rest[1] ? JSON.parse(rest[1]) : {});
     if (out.error) { console.error(out.error); process.exitCode = 1; } else console.log(out.text);
     break;
   }
@@ -114,73 +216,103 @@ switch (cmd) {
     console.log(file);
     break;
   }
-  case 'serve': {
-    // The founder's page: answers, thoughts, approvals. 127.0.0.1 by default; --lan opens it to phones on the same
-    // Wi-Fi, and then every request must carry the secret link token.
+  case 'serve':
     if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
-    const http = await import('node:http');
-    const crypto = await import('node:crypto');
-    const os = await import('node:os');
-    const { renderDashboard } = await import('../server/dashboard.mjs');
+    await serve();
+    break;
+  case 'up': {
+    // One command for the founder: the page (and the phone link with --phone) plus the dead-chat watcher.
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room in Claude Code.'); break; }
     const port = Number(flag('port', 4818));
-    const lan = rest.includes('--lan');
-    // A fresh secret link on every start; --keep-link reuses the last one (kept in the user folder, never the project).
-    const keepFile = `${userDir()}/lan-link`;
-    let token = rest.includes('--keep-link') && fs.existsSync(keepFile) ? fs.readFileSync(keepFile, 'utf8').trim() : crypto.randomBytes(24).toString('base64url');
-    if (lan) fs.writeFileSync(keepFile, token, { mode: 0o600 });
-    const tokenOk = (got) => !lan || (typeof got === 'string' && got.length === token.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(token)));
-    const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
-      + (fs.existsSync(`${store.root}/log.jsonl`) ? fs.statSync(`${store.root}/log.jsonl`).mtimeMs : 0);
-    const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
-    const actions = {
-      '/api/answer': (b) => callTool(store, 'founder_answer', { agent: store.config().commander, questionId: String(b.questionId), founderWords: String(b.text) }),
-      '/api/thought': (b) => {
-        const out = callTool(store, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: `Founder thought: ${b.text}` });
-        if (!out.error) autoRemember(store, { kind: 'idea', text: String(b.text), source: 'founder' });
-        return out;
-      },
-      '/api/approve': (b) => {
-        try {
-          const ap = resolveApproval(store, { id: String(b.id), yes: b.yes === true, by: 'founder (war-room page)' });
-          callTool(store, 'post_message', { agent: 'founder', to: ap.agent, kind: 'info', text: `${ap.id} ${ap.status} by the founder: ${ap.action}` });
-          return { text: 'ok' };
-        } catch (e) { return { error: e.message }; }
-      },
-      '/api/goal': (b) => callTool(store, 'decide_goal', { agent: store.config().commander, goalId: String(b.goalId), choice: String(b.choice), founderWords: `chose "${b.choice}" on the war-room page` }),
-    };
-    http.createServer((req, res) => {
-      const url = new URL(req.url, 'http://x');
-      if (!tokenOk(url.searchParams.get('t') || req.headers['x-war-room-token'])) { res.writeHead(403); return res.end('Forbidden'); }
-      // A local page must only answer to localhost names, or a malicious site could rebind its DNS to it.
-      if (!lan && !new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]).has(req.headers.host)) { res.writeHead(403); return res.end('Forbidden host'); }
-      if (req.method === 'POST' && !String(req.headers['content-type'] || '').startsWith('application/json')) return json(res, 415, { error: 'JSON only.' });
-      const origin = req.headers.origin;
-      if (req.method === 'POST' && origin && origin !== `http://${req.headers.host}`) return json(res, 403, { error: 'Cross-site request refused.' });
-      if (req.method === 'GET' && url.pathname === '/api/version') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end(version()); }
-      if (req.method === 'GET' && url.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff',
-        'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" }); return res.end(renderDashboard(store, { live: true })); }
-      if (req.method === 'POST' && actions[url.pathname]) {
-        let body = '';
-        req.on('data', (d) => { body += d; if (body.length > 20000) req.destroy(); });
-        req.on('end', () => {
-          let b = {};
-          try { b = JSON.parse(body); } catch { return json(res, 400, { error: 'Bad request.' }); }
-          if (['/api/answer', '/api/thought'].includes(url.pathname) && !String(b.text || '').trim()) return json(res, 400, { error: 'Empty.' });
-          const out = actions[url.pathname](b);
-          if (out.error) return json(res, 400, { error: out.error });
-          notify(store, `Founder used the war-room page (${url.pathname.slice(5)}).`);
-          return json(res, 200, { ok: true });
-        });
-        return;
+    const lan = rest.includes('--phone') || rest.includes('--lan');
+    const upFile = `${store.root}/up.json`;
+    try {
+      const up = JSON.parse(fs.readFileSync(upFile, 'utf8'));
+      if (up.pid !== process.pid) { process.kill(up.pid, 0); console.log(`The war room is already up: http://127.0.0.1:${up.port}/ (process ${up.pid}). Stop it with: kill ${up.pid}`); break; }
+    } catch {}
+    await serve({ port, lan, keepLink: rest.includes('--keep-link'), onListen: () => {
+      fs.writeFileSync(upFile, JSON.stringify({ pid: process.pid, port, lan, started: now() }));
+      if (!rest.includes('--no-open') && process.platform === 'darwin') execFile('open', [`http://127.0.0.1:${port}/`], () => {});
+    } });
+    await startWatch({ every: Number(flag('every', 60)) });
+    const bye = () => { try { if (JSON.parse(fs.readFileSync(upFile, 'utf8')).pid === process.pid) fs.rmSync(upFile); } catch {} process.exit(0); };
+    process.on('SIGINT', bye); process.on('SIGTERM', bye);
+    break;
+  }
+  case 'spawn': {
+    // Start a worker chat in the background: war-room spawn frontend [--agent claude|codex|gemini|cursor] [--model sonnet]
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    const { startWorker } = await import('../server/agents.mjs');
+    try {
+      const run = startWorker(store, { name: rest[0], agent: flag('agent', 'claude'), model: flag('model') });
+      console.log(`${run.id}: worker "${run.name}" started with ${run.agent}${run.model ? ` (${run.model})` : ''}. Log: ${run.log}`);
+    } catch (e) { console.error(e.message); process.exitCode = 1; }
+    break;
+  }
+  case 'runs': {
+    const { runStatus } = await import('../server/agents.mjs');
+    const runs = store.exists() ? store.read('runs') : [];
+    if (!runs.length) console.log('No worker chats started yet.');
+    for (const r of runs) console.log(`${r.id} ${r.name.padEnd(14)} ${r.agent}${r.model ? `:${r.model}` : ''} ${runStatus(r).padEnd(9)} started ${r.started} · ${r.log}`);
+    break;
+  }
+  case 'debate': {
+    // war-room debate "question" [--seats claude:opus,codex,gemini] [--rounds 2]   (or --id dN to run a queued one)
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    const { createDebate, runDebate } = await import('../server/agents.mjs');
+    let id = flag('id');
+    try {
+      if (!id) {
+        const q = rest.find((x, i) => !x.startsWith('--') && !(i > 0 && rest[i - 1].startsWith('--')));
+        if (!q) { console.log('Ask a question: war-room debate "Should we …?"'); process.exitCode = 1; break; }
+        const d = createDebate(store, { question: q, seats: flag('seats')?.split(',').filter(Boolean), rounds: Number(flag('rounds', 2)), by: flag('by', 'founder (cli)') });
+        id = d.id;
+        console.log(`${d.id}: ${d.seats.map((x) => x.seat).join(', ')} (${d.companies.join(', ')})${d.companies.length < 2 ? '\nAll seats are from one company: agreement between them is weak evidence. Run war-room doctor to connect another.' : ''}`);
       }
-      res.writeHead(404); res.end('Not found');
-    }).listen(port, lan ? '0.0.0.0' : '127.0.0.1', () => {
-      console.log(`War room page: http://127.0.0.1:${port}/${lan ? `?t=${token}` : ''}`);
-      if (lan) {
-        for (const nets of Object.values(os.networkInterfaces())) for (const n of nets || []) if (n.family === 'IPv4' && !n.internal) console.log(`On your phone (same Wi-Fi): http://${n.address}:${port}/?t=${token}`);
-        console.log('Keep this link private: anyone on the same Wi-Fi with it can answer and approve.');
+      const d = await runDebate(store, id, { timeoutMs: Number(flag('timeout', 600)) * 1000 });
+      for (const [r, round] of d.results.entries()) {
+        console.log(`\n── Round ${r + 1}${r ? ' (after reading the others)' : ' (blind)'} ──`);
+        for (const a of round) console.log(`\n[${a.seat}]${a.ok ? '' : ' FAILED'}\n${a.text}`);
       }
-    });
+      console.log('\n── Final answers ──');
+      for (const f of d.finals) console.log(`${f.seat}: ${f.final}`);
+    } catch (e) { console.error(e.message); process.exitCode = 1; }
+    break;
+  }
+  case 'connect': {
+    // Join Codex, Gemini CLI or Cursor to this computer's war room. Shows the change first; writes with --yes.
+    const { connectAgent } = await import('../server/agents.mjs');
+    try {
+      const project = store.exists() ? path.dirname(store.root) : null;
+      const out = connectAgent(rest[0], { project, write: rest.includes('--yes') });
+      if (!out.changes.length) { console.log(`${rest[0]} is already connected.`); break; }
+      console.log(`${rest.includes('--yes') ? 'Done' : 'Will'}:\n  ${out.changes.join('\n  ')}`);
+      if (!rest.includes('--yes')) console.log(`\nRun again with --yes to do it (a backup is kept next to the file).`);
+      if (!out.installed) console.log(`\nNote: ${rest[0]} is not installed on this computer yet.`);
+    } catch (e) { console.error(e.message); process.exitCode = 1; }
+    break;
+  }
+  case 'doctor': {
+    // One look at everything: what is installed, connected and running, and the next step for each gap.
+    const { recipes, which, isConnected, CONNECT, runStatus } = await import('../server/agents.mjs');
+    const ok = (b) => (b ? '✓' : '·');
+    console.log(`War room doctor · node ${process.versions.node}${Number(process.versions.node.split('.')[0]) < 18 ? ' (needs 18+)' : ''}`);
+    console.log(`\nThis project: ${store.exists() ? `war room ready (${store.root})` : 'no war room yet → type /war-room your goal in Claude Code'}`);
+    if (store.exists()) {
+      let up = null;
+      try { up = JSON.parse(fs.readFileSync(`${store.root}/up.json`, 'utf8')); process.kill(up.pid, 0); } catch { up = null; }
+      console.log(`Page: ${up ? `running at http://127.0.0.1:${up.port}/${up.lan ? ' (phone link on)' : ''}` : 'not running → war-room up   (add --phone for your phone)'}`);
+      const runs = store.read('runs').filter((r) => runStatus(r) === 'running');
+      console.log(`Worker chats running: ${runs.length ? runs.map((r) => r.name).join(', ') : 'none'}`);
+    }
+    console.log('\nCoding agents (different companies argue better):');
+    for (const [name, r] of Object.entries(recipes())) {
+      const have = !!which(r.bin);
+      const conn = CONNECT[name] ? isConnected(name) : null;
+      const next = !have ? `not installed${name === 'claude' ? '' : ` (optional)`}` : conn === false ? `installed, not connected → war-room connect ${name} --yes` : 'ready';
+      console.log(`  ${ok(have && conn !== false)} ${name.padEnd(8)} ${r.company.padEnd(16)} ${next}`);
+    }
+    console.log(`\nNotifications: ${userConfig().notifyCommand ? 'on' : 'off (optional: set notifyCommand in ~/.config/war-room/config.json)'}`);
     break;
   }
   case 'check-stale': {
@@ -230,6 +362,8 @@ switch (cmd) {
     try {
       const ap = resolveApproval(store, { id: flag('id'), yes: rest.includes('--yes'), by: 'founder (cli)' });
       console.log(`${ap.id} ${ap.status}: ${ap.action}`);
+      const resumed = resumeAfterApproval(store, ap);
+      if (resumed) console.log(`Worker "${resumed.name}" restarted to carry on (${resumed.id}).`);
     } catch (e) { console.error(e.message); process.exitCode = 1; }
     break;
   }
@@ -241,24 +375,10 @@ switch (cmd) {
     notify(store, `Founder answered ${flag('question')} — the commander can continue.`);
     break;
   }
-  case 'watch': {
+  case 'watch':
     if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
-    const mins = Number(flag('every', 60));
-    const { renderDashboard } = await import('../server/dashboard.mjs');
-    const redraw = () => { try { fs.writeFileSync(`${store.root}/dashboard.html`, renderDashboard(store)); } catch {} };
-    console.log(`Watching ${store.root}: stale check every ${mins} min; file changes redraw the dashboard and notify instantly. Ctrl-C to stop.`);
-    const pass = () => { const n = checkStale(store); if (n) notify(store, `${n} stale task(s) — alert in the commander's inbox.`); redraw(); };
-    pass();
-    setInterval(pass, mins * 60e3);
-    let debounce;
-    fs.watch(store.root, (ev, f) => {
-      if (!f?.endsWith('.json') && f !== 'log.jsonl') return;
-      if (f === 'config.json' || f === 'lock') return;
-      clearTimeout(debounce);
-      debounce = setTimeout(() => { redraw(); notify(store, `War room updated (${f}).`); }, 1500);
-    });
+    await startWatch();
     break;
-  }
   case 'hook-session-start': {
     // Silent when the project has no war room: no clear goal, no war room.
     if (!store.exists()) break;
@@ -293,5 +413,15 @@ switch (cmd) {
     break;
   }
   default:
-    console.log('war-room init [--project NAME] [--commander NAME] | status | dashboard | serve [--port 4818] [--lan] [--keep-link] | confirm-rules [--yes] | approve --id A --yes|--no | brief [--agent NAME] | call TOOL [JSON] | check-stale | watch [--every MIN] | answer --question ID --text "..."');
+    console.log(`war-room <command>
+  up [--phone] [--no-open]        start the page and the watcher (one command)
+  doctor                          what is installed, connected and running
+  status                          progress bars in the terminal
+  spawn NAME [--agent claude|codex|gemini|cursor] [--model M]   start a worker chat
+  runs                            worker chats and whether they still run
+  debate "QUESTION" [--seats claude:opus,codex,gemini] [--rounds 2]   agents argue
+  connect codex|gemini|cursor [--yes]   join another agent to the war room
+  rules [--off sN --yes | --on sN --yes]   starter rules and your rules
+  approve --id A --yes|--no · answer --question ID --text "..." · confirm-rules [--yes]
+  init · serve [--lan] · watch · dashboard · brief [--agent N] · call TOOL [JSON] · check-stale`);
 }

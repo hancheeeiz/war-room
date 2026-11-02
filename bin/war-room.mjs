@@ -309,8 +309,9 @@ switch (cmd) {
     for (const [name, r] of Object.entries(recipes())) {
       const have = !!which(r.bin);
       const conn = CONNECT[name] ? isConnected(name) : null;
-      const next = !have ? `not installed${name === 'claude' ? '' : ` (optional)`}` : conn === false ? `installed, not connected → war-room connect ${name} --yes` : 'ready';
-      console.log(`  ${ok(have && conn !== false)} ${name.padEnd(8)} ${r.company.padEnd(16)} ${next}`);
+      // Debates only need the agent installed; taking tasks from the war room also needs it connected.
+      const next = !have ? `not installed${name === 'claude' ? '' : ' (optional)'}` : conn === false ? `ready for debates · to take tasks too: war-room connect ${name} --yes` : 'ready';
+      console.log(`  ${ok(have)} ${name.padEnd(8)} ${r.company.padEnd(16)} ${next}`);
     }
     console.log(`\nNotifications: ${userConfig().notifyCommand ? 'on' : 'off (optional: set notifyCommand in ~/.config/war-room/config.json)'}`);
     break;

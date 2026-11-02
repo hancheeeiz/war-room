@@ -16,7 +16,9 @@ export const CLI = path.join(PLUGIN_ROOT, 'bin', 'war-room.mjs');
 const RECIPES = {
   claude: { company: 'Anthropic', bin: 'claude', ask: ['-p', '{prompt}', '--tools', 'Read,Grep,Glob', '--model', '{model}'], work: ['-p', '{prompt}', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash,mcp__war-room,mcp__plugin_war-room_war-room', '--model', '{model}'], models: ['opus', 'sonnet', 'haiku'] },
   codex: { company: 'OpenAI', bin: 'codex', ask: ['exec', '-c', 'model="{model}"', '{prompt}'], work: ['exec', '--full-auto', '-c', 'model="{model}"', '{prompt}'] },
-  gemini: { company: 'Google', bin: 'gemini', ask: ['-m', '{model}', '-p', '{prompt}'], work: ['-m', '{model}', '-p', '{prompt}'] },
+  // Gemini refuses headless runs in a folder it was not told to trust; --skip-trust trusts this project for the run.
+  // "plan" is its read-only mode; workers may edit files (auto_edit) but still ask before shell commands.
+  gemini: { company: 'Google', bin: 'gemini', ask: ['--skip-trust', '--approval-mode', 'plan', '-m', '{model}', '-p', '{prompt}'], work: ['--skip-trust', '--approval-mode', 'auto_edit', '-m', '{model}', '-p', '{prompt}'] },
   cursor: { company: 'Cursor', bin: 'cursor-agent', ask: ['-p', '--mode', 'ask', '--model', '{model}', '--output-format', 'text', '{prompt}'], work: ['-p', '--model', '{model}', '--output-format', 'text', '{prompt}'] },
   ollama: { company: 'local (Ollama)', bin: 'ollama', ask: ['run', '{model}', '{prompt}'], needsModel: true },
 };
@@ -166,6 +168,13 @@ Say where the others are wrong and where they are right. Keep your answer if it 
 FINAL: <your answer in one line>`;
 }
 
+// Agent CLIs bury the real reason (no credit, bad key, quota) inside long error dumps; pull out the plain part.
+function whyFailed(out) {
+  const known = out.match(/(prepayment credits are depleted|quota[^"\\.]*|API key not valid[^"\\.]*|not logged in[^"\\.]*|PERMISSION_DENIED[^"\\]*|not running in a trusted directory)/i);
+  if (known) return known[1].replace(/\s+/g, ' ').trim();
+  return out.trim().split('\n').filter((l) => l.trim() && !/^\s+at /.test(l)).pop();
+}
+
 function ask(seat, prompt, cwd, timeoutMs) {
   return new Promise((resolve) => {
     let cmd;
@@ -173,7 +182,7 @@ function ask(seat, prompt, cwd, timeoutMs) {
     const t = Date.now();
     execFile(cmd.bin, cmd.args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, WAR_ROOM_AGENT: `debate-${seat.seat}` } }, (err, stdout, stderr) => {
       const text = String(stdout || '').trim();
-      if (err && !text) return resolve({ ok: false, text: `Failed: ${err.killed ? 'timed out' : (String(stderr).trim().split('\n').pop() || err.message)}`.slice(0, 500), ms: Date.now() - t });
+      if (err && !text) return resolve({ ok: false, text: `Failed: ${err.killed ? 'timed out' : whyFailed(String(stderr)) || err.message}`.slice(0, 500), ms: Date.now() - t });
       resolve({ ok: true, text: text.slice(0, 12000), final: text.match(FINAL)?.[1]?.trim(), ms: Date.now() - t });
     });
   });

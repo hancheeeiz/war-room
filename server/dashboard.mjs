@@ -277,7 +277,7 @@ button{font:inherit;cursor:pointer}
 textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:9px 10px;resize:vertical;min-height:60px}
 button:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.send{border:0;background:var(--accent);color:var(--accent-ink);border-radius:10px;padding:9px 18px;font-weight:600}.send:disabled{opacity:.5}
+.send.armed{background:var(--warn)}.send{border:0;background:var(--accent);color:var(--accent-ink);border-radius:10px;padding:9px 18px;font-weight:600}.send:disabled{opacity:.5}
 .link{border:0;background:none;color:var(--accent);padding:10px 0 0;font-weight:500}
 .note{color:var(--muted);font-size:13px;margin:8px 0 0}.out{margin:0}.out.ok{color:var(--ok)}.out.bad{color:var(--bad)}
 .empty{color:var(--ok);font-weight:600;margin:0}
@@ -348,11 +348,16 @@ document.getElementById('sayBtn').onclick=async e=>{const text=say.value.trim();
   const fallback=target.answer?'war-room answer --question '+target.answer+' --text '+shq(text):'war-room call post_message '+shq(JSON.stringify({agent:'founder',to:target.to||'commander',kind:'info',text}));
   if(await post('/api/say',body,sayOut,fallback)){say.value='';sayOut.textContent=target.to?'Sent to '+target.to+'. It starts on it in the background.':target.answer?'Answer saved. The commander carries on.':'Sent. The commander is on it in the background; the team chart shows who it hands the work to.';setTimeout(()=>location.reload(),2500)}
   e.target.disabled=false};
+// No browser pop-ups: the app's built-in browser and some phone browsers block confirm() silently, so the tap did
+// nothing. Approve asks on the page instead: the first tap arms the button, a second tap within 5 seconds sends.
+let armed=null;
 document.querySelectorAll('[data-approve]').forEach(b=>b.onclick=async()=>{const box=b.closest('.ap'),out=box.querySelector('.out'),yes=b.dataset.yes==='1';
-  if(yes&&!confirm('Approve '+b.dataset.approve+'? It will run once.'))return;box.querySelectorAll('button').forEach(x=>x.disabled=true);
+  if(yes&&armed!==b){if(armed){armed.textContent='Approve';armed.classList.remove('armed')}armed=b;b.textContent='Tap again to approve';b.classList.add('armed');out.className='note out';out.textContent='This lets it happen once. Tap again to confirm.';
+    setTimeout(()=>{if(armed===b){armed=null;b.textContent='Approve';b.classList.remove('armed');out.textContent=''}},5000);return}
+  armed=null;box.querySelectorAll('button').forEach(x=>x.disabled=true);
   if(await post('/api/approve',{id:b.dataset.approve,yes},out,'war-room approve --id '+b.dataset.approve+(yes?' --yes':' --no')))setTimeout(()=>location.reload(),900);else box.querySelectorAll('button').forEach(x=>x.disabled=false)});
 document.querySelectorAll('[data-goal]').forEach(b=>b.onclick=async()=>{const box=b.closest('.ap'),out=box.querySelector('.out');box.querySelectorAll('button').forEach(x=>x.disabled=true);
   if(await post('/api/goal',{goalId:b.dataset.goal,choice:b.dataset.choice},out,'war-room call decide_goal '+shq(JSON.stringify({agent:'commander',goalId:b.dataset.goal,choice:b.dataset.choice,founderWords:'chose on the page'}))))setTimeout(()=>location.reload(),900);else box.querySelectorAll('button').forEach(x=>x.disabled=false)});
-if(LIVE)setInterval(async()=>{try{const r=await fetch('/api/version',{headers:{'x-war-room-token':TOKEN}});const v=await r.text();if(window.__v&&v!==window.__v&&!document.activeElement.matches('textarea'))location.reload();window.__v=v}catch{}},5000);
+if(LIVE)setInterval(async()=>{try{const r=await fetch('/api/version',{headers:{'x-war-room-token':TOKEN}});const v=await r.text();if(window.__v&&v!==window.__v&&!armed&&!document.activeElement.matches('textarea'))location.reload();window.__v=v}catch{}},5000);
 </script></body></html>`;
 }

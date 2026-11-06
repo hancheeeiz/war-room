@@ -4,6 +4,7 @@ import { starterRules } from './starter-rules.mjs';
 import { now } from './store.mjs';
 import { recipes, runStatus, stoppedWorkers } from './agents.mjs';
 import { markdownToHtml, readShelfItem } from './shelf.mjs';
+import { studyProgress } from './tools.mjs';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
@@ -20,6 +21,12 @@ function levelRows(g) {
     const p = pct(done, m.checks.length);
     return `<div class="lv ${p === 100 ? 'won' : ''}"><span class="lv-id">L${i + 1}</span><div class="xp"><span style="width:${p}%"></span><em>${esc(m.title)}</em></div><span class="lv-n">${done}/${m.checks.length}</span></div>`;
   }).join('');
+}
+
+// The founder's study bar for a goal: notes read out of topics to learn.
+function studyBar(s) {
+  const p = pct(s.read, s.total);
+  return `<div class="lv study ${p === 100 ? 'won' : ''}"><span class="lv-id">📖</span><div class="xp"><span style="width:${p}%"></span><em>${s.read} of ${s.total} read</em></div><span class="lv-n">${p}%</span></div>${s.written < s.total ? `<p class="boss-sub">${s.total - s.written} note${s.total - s.written > 1 ? 's' : ''} not written yet</p>` : ''}`;
 }
 
 function eventText(e) {
@@ -70,6 +77,7 @@ export function renderDashboard(store, { live = false } = {}) {
       <div class="boss-sub">${goalPct}% · ${done} of ${checks.length} checks verified</div>
       <div class="panel-k" style="margin-top:20px">Milestones</div>
       ${levelRows(main) || '<p class="boss-sub">No plan yet.</p>'}
+      ${main.verdict?.learn?.length ? `<div class="panel-k" style="margin-top:20px">Your study</div>${studyBar(studyProgress(main, store.read('shelf')))}` : ''}
     </section>`;
     todayPanel = `<section class="card today-panel"><div class="card-h"><h2>Today</h2><span class="meta">${todayDone}/${todayTotal} done</span></div>
       <ul class="daily">${items.map((i, n) => (i.taskId
@@ -221,14 +229,15 @@ export function renderDashboard(store, { live = false } = {}) {
     return `<article class="book card" id="book-${esc(b.id)}" hidden>
       <div class="book-bar"><button type="button" class="link small" data-close-book>← Back to the shelf</button><span class="meta">${esc(b.category)} · ${esc(b.path)}</span></div>
       ${r.error ? `<p class="note out bad">Cannot show this file: ${esc(r.error)}</p>` : `<div class="md">${markdownToHtml(r.text)}</div>`}
-      <div class="book-bar foot"><button type="button" class="link small" data-close-book>← Back to the shelf</button><span class="meta">on the shelf since ${esc(b.added)}</span></div></article>`;
+      <div class="book-bar foot"><button type="button" class="link small" data-close-book>← Back to the shelf</button><button type="button" class="send${b.readAt ? ' done' : ''}" data-read="${esc(b.id)}" data-was="${b.readAt ? 1 : 0}">${b.readAt ? '✓ Read · tap to undo' : 'I\'ve read this'}</button><span class="meta">on the shelf since ${esc(b.added)}${b.readAt ? ` · read ${esc(b.readAt)}` : ''}</span></div><span class="note out" id="readOut-${esc(b.id)}"></span></article>`;
   }).join('');
   const shelfList = sections.map((sec) => `<section class="card"><div class="card-h"><h2>${esc(sec.name)}</h2><span class="meta">${sec.books.length}</span></div>
     ${sec.books.map((b) => `<button type="button" class="spine" data-book="${esc(b.id)}"><span class="spine-t">${esc(b.title)}</span><span class="meta">${esc(b.path)} · ${esc(String(b.added).slice(0, 10))}</span></button>`).join('')}</section>`).join('');
   const learnCards = goals.filter((g) => g.verdict?.learn?.length && !['done', 'later'].includes(g.status)).map((g) => {
     const notes = shelf.filter((b) => b.goalId === g.id);
     return `<section class="card"><div class="card-h"><h2>To learn for: ${esc(g.title)}</h2><span class="meta">${g.verdict.learn.filter((t) => notes.some((b) => b.topic === t)).length}/${g.verdict.learn.length} written</span></div>
-    ${g.verdict.learn.map((t) => { const b = notes.find((x) => x.topic === t); return b ? `<button type="button" class="spine" data-book="${esc(b.id)}"><span class="spine-t">${esc(t)}</span><span class="meta">Read the note</span></button>` : `<div class="spine"><span class="spine-t">${esc(t)}</span><span class="meta">Note not written yet</span></div>`; }).join('')}</section>`;
+    ${studyBar(studyProgress(g, shelf))}
+    ${g.verdict.learn.map((t) => { const b = notes.find((x) => x.topic === t); return b ? `<button type="button" class="spine" data-book="${esc(b.id)}"><span class="spine-t">${esc(t)}</span><span class="meta">${b.readAt ? '✓ Read' : 'Not read yet · tap to read'}</span></button>` : `<div class="spine"><span class="spine-t">${esc(t)}</span><span class="meta">Note not written yet</span></div>`; }).join('')}</section>`;
   }).join('');
   const showShelf = shelf.length > 0 || learnCards !== '';
   const shelfPane = `<div id="shelfList" class="shelf">${learnCards}${shelfList || learnCards || '<section class="card"><h2>Shelf</h2><p class="note">Nothing on the shelf yet. Ask the commander to shelve a note, e.g. "put docs/notes/01.md on the shelf".</p></section>'}
@@ -347,6 +356,7 @@ ul.daily li{display:flex;gap:10px;align-items:flex-start;padding:6px 0}ul.daily 
 .lv{display:grid;grid-template-columns:26px 1fr 40px;gap:8px;align-items:center;margin:6px 0;font-size:12px}.lv-id{color:#a99be0;font-weight:600}.lv-n{text-align:right;color:var(--muted);font-size:11px}
 .xp{position:relative;height:20px;border:1px solid #3a2f66;background:#17142a;border-radius:3px;overflow:hidden}.xp span{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,#6d4fd1,#a184f2)}
 .xp em{position:relative;display:block;padding:0 8px;line-height:18px;font-style:normal;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#eeeaf6}
+.send.done{background:var(--ok)}.study .xp span{background:linear-gradient(90deg,#2f7fd1,#6fb6f2)}
 .lv.won .xp span{background:linear-gradient(90deg,#1f8a54,#5ac38a)}.lv.won .lv-n{color:var(--ok)}
 .party{display:grid;grid-template-columns:1fr 1fr;gap:8px}@media (max-width:420px){.party{grid-template-columns:1fr}}
 .hud-card{border:1px solid #3a2f66;background:#17142a;border-radius:8px;padding:8px 10px;font-size:12px;min-width:0}.hud-card.working{border-color:var(--ok)}
@@ -381,6 +391,8 @@ function closeBook(){document.querySelectorAll('.book').forEach(x=>x.hidden=true
 document.querySelectorAll('[data-book]').forEach(b=>b.onclick=()=>openBook(b.dataset.book));
 document.querySelectorAll('[data-close-book]').forEach(b=>b.onclick=closeBook);
 document.querySelectorAll('.tabs [data-go]').forEach(b=>b.addEventListener('click',()=>{if(b.dataset.go!=='shelf')closeBook()}));
+document.querySelectorAll('[data-read]').forEach(b=>b.onclick=async()=>{const read=b.dataset.was!=='1';b.disabled=true;
+  if(await post('/api/read',{id:b.dataset.read,read},document.getElementById('readOut-'+b.dataset.read),'war-room read --note '+b.dataset.read+(read?'':' --undo')))setTimeout(()=>location.reload(),500);else b.disabled=false});
 if(location.hash.startsWith('#shelf/'))openBook(decodeURIComponent(location.hash.slice(7)));
 document.querySelectorAll('[data-fill]').forEach(b=>b.onclick=()=>{b.closest('.q').querySelector('textarea').value=b.dataset.fill});
 const shq=s=>"'"+s.replace(/'/g,"'\\\\''")+"'";

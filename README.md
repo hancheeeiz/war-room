@@ -97,7 +97,7 @@ war-room call shelve '{"agent":"commander","path":"docs/notes/01-event-sourcing.
 war-room call shelve '{"agent":"commander","path":"docs/notes/01-event-sourcing.md","remove":true}'   # take it off
 ```
 
-**Learning depends on the goal.** When the commander judges a goal it lists what you need to learn for it, or nothing. Each topic becomes one short note on the shelf, under "To learn for: <goal>", marked *Note not written yet* until the commander writes it. A goal that needs no learning adds nothing, and the **Shelf** tab only shows when something is on it.
+**Learning depends on the goal.** When the commander judges a goal it lists what you need to learn for it, or nothing. Each topic becomes one short note on the shelf, under "To learn for: <goal>", marked *Note not written yet* until the commander writes it. **Study bar:** at the end of each note, tap **I've read this** (or `war-room read --note b2`, `--undo` to take it back). Your study bar on the Main tab, under the goal, and on the Shelf counts notes read out of all topics to learn. A goal that needs no learning adds nothing, and the **Shelf** tab only shows when something is on it.
 
 Then open the page, tap **Shelf**, and tap a title: the note opens as a readable page with headings, tables, lists, bold, code blocks and any language (Chinese included). **← Back to the shelf** returns to the list; the page address keeps the open note, and the page does not refresh itself while you read.
 

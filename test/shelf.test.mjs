@@ -238,3 +238,27 @@ test('milestones: as many as the goal needs, never zero, and each with a check',
   assert.match(plan([]).error, /at least one milestone/);
   assert.match(plan([{ title: 'Empty', win: 'w', checks: [] }]).error, /"Empty" has no check/);
 });
+
+test('study bar: the founder marks notes read; the bar counts read notes out of all topics to learn', async (tc) => {
+  const dir = tmpProject();
+  judged(dir, ['事件溯源', '種子隨機']);
+  call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', checks: ['a1'] }] });
+  call(dir, 'shelve', { agent: 'commander', path: 'docs/學習/01-事件溯源.md', goalId: 'g1', topic: '事件溯源' });
+  assert.match(page(dir), /Your study[\s\S]*0 of 2 read<\/em>[\s\S]*1 note not written yet/);
+  const port = 45000 + Math.floor(Math.random() * 900);
+  const srv = spawn(process.execPath, [CLI, 'serve', '--port', String(port)], { cwd: dir, env: { ...process.env, WAR_ROOM_DIR: dir } });
+  tc.after(() => srv.kill());
+  await new Promise((r) => srv.stdout.once('data', r));
+  const read = (body) => fetch(`http://127.0.0.1:${port}/api/read`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  assert.equal((await read({ id: 'b1', read: true })).status, 200);
+  assert.match((await read({ id: 'b9' })).body.error, /No note b9/);
+  assert.match(page(dir), /1 of 2 read<\/em>[\s\S]*1 note not written yet[\s\S]*✓ Read/);
+  const status = JSON.parse(spawnSync(process.execPath, [CLI, 'call', 'war_room_status'], { cwd: dir, encoding: 'utf8' }).stdout);
+  assert.deepEqual(status.goals[0].study, { total: 2, written: 1, read: 1 });
+  assert.match(brief(dir), /founder has read 1 of 2 learning notes/);
+  assert.match(spawnSync(process.execPath, [CLI, 'read', '--note', 'b1', '--undo'], { cwd: dir, encoding: 'utf8' }).stdout, /\[not read\]/);
+  assert.match(page(dir), /0 of 2 read<\/em>/);
+  // An agent cannot mark the founder's reading from the shell without the founder's yes.
+  const guard = spawnSync(process.execPath, [CLI, 'hook-guard'], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'war-room read --note b1' } }), encoding: 'utf8', env: { ...process.env, WAR_ROOM_DIR: '/nonexistent' } }).stdout;
+  assert.match(guard, /"ask"/);
+});

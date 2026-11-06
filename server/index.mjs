@@ -4,7 +4,7 @@ import readline from 'node:readline';
 import { Store } from './store.mjs';
 import { TOOLS, callTool } from './tools.mjs';
 
-const VERSION = '0.3.2';
+const VERSION = '0.3.3';
 const store = new Store();
 
 const send = (msg) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...msg })}\n`);

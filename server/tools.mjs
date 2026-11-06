@@ -108,7 +108,14 @@ function overBudget(store) {
   return { budget, agents: Object.entries(todayEvents(store)).filter(([, n]) => n > budget) };
 }
 
-function progress(goal, tasks) {
+// The founder's study progress on a goal's learning list: topics with a note, and notes the founder marked read.
+export function studyProgress(goal, shelf) {
+  const topics = goal.verdict?.learn || [];
+  const notes = topics.map((t) => shelf.find((b) => b.goalId === goal.id && b.topic === t)).filter(Boolean);
+  return { total: topics.length, written: notes.length, read: notes.filter((b) => b.readAt).length };
+}
+
+function progress(goal, tasks, shelf = []) {
   const checks = (goal.milestones || []).flatMap((m) => m.checks || []);
   const verified = checks.filter((c) => c.verified).length;
   const todayItems = (goal.daily?.[today()] || []).map((it) => {
@@ -128,6 +135,7 @@ function progress(goal, tasks) {
       percent: m.checks?.length ? Math.round((m.checks.filter((c) => c.verified).length / m.checks.length) * 100) : 0,
     })),
     today: todayItems,
+    ...(goal.verdict?.learn?.length ? { study: studyProgress(goal, shelf) } : {}),
   };
 }
 
@@ -171,7 +179,7 @@ export function brief(store, agent) {
   if (inbox.length) out.push('', '## Messages for you', ...inbox.map((m) => `- #${m.id} from ${m.from} [${m.kind}]: ${m.text.slice(0, 200)}`));
   if (agent === cfg.commander) {
     const active = goals.filter((g) => !['done', 'dropped'].includes(g.status));
-    if (active.length) out.push('', '## Goals', ...active.map((g) => { const p = progress(g, tasks); return `- ${g.id} [${g.status}] ${g.title} — ${p.percent}% (${p.verifiedChecks} checks verified)`; }));
+    if (active.length) out.push('', '## Goals', ...active.map((g) => { const p = progress(g, tasks, store.read('shelf')); return `- ${g.id} [${g.status}] ${g.title} — ${p.percent}% (${p.verifiedChecks} checks verified)${p.study ? `; founder has read ${p.study.read} of ${p.study.total} learning notes` : ''}`; }));
     const learning = active.map((g) => [g, learningDue(store, g)]).filter(([g, due]) => due.length && ['approved', 'active'].includes(g.status));
     if (learning.length) out.push('', '## Learning notes still to write (one short note each, then shelve it with goalId and topic)', ...learning.map(([g, due]) => `- ${g.id}: ${due.join('; ')}`));
     if (team.length) out.push('', '## Your team (route each piece of work to the right role; hire adds one)', ...team.map((m) => `- ${m.name}: ${m.role}${m.does ? ` — ${m.does}` : ''} (${m.use || 'claude'}${m.model ? ` ${m.model}` : ''})`));
@@ -228,7 +236,7 @@ export const TOOLS = [
       const goals = store.read('goals').filter((g) => g.status !== 'dropped');
       const agents = Object.create(null);
       for (const t of tasks.filter((x) => x.status !== 'verified')) (agents[t.agent || 'unassigned'] ||= []).push(`${t.id} ${t.title} [${t.status}]`);
-      return { goals: goals.map((g) => progress(g, tasks)), team: store.read('team'), agents, log: store.readLog(10) };
+      return { goals: goals.map((g) => progress(g, tasks, store.read('shelf'))), team: store.read('team'), agents, log: store.readLog(10) };
     },
   },
   {
@@ -744,6 +752,17 @@ export function tickToday(store, { goalId, index, text, done = true }) {
     if (done) it.done = true; else delete it.done;
     store.log({ agent: 'founder', event: done ? 'today_done' : 'today_undone', id: goalId, text: it.text });
     return it;
+  });
+}
+
+// The founder marks a shelf note read (or unread). Page and terminal only, like ticking today's goals.
+export function markRead(store, { id, read = true }) {
+  return store.update('shelf', (shelf) => {
+    const b = shelf.find((x) => x.id === id);
+    if (!b) throw new Refused(`No note ${id} on the shelf.`);
+    if (read) b.readAt = now(); else delete b.readAt;
+    store.log({ agent: 'founder', event: read ? 'note_read' : 'note_unread', id: b.id, text: b.title });
+    return b;
   });
 }
 

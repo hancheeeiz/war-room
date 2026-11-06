@@ -1,6 +1,6 @@
 {
   "name": "war-room",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "A commander chat for solo builders: long-term memory, goal judging, progress bars, worker chats it starts itself, debates between coding agents from different companies, and a founder-yes guard on risky actions.",
   "author": {
     "name": "hancheeeiz"

@@ -1,6 +1,6 @@
 # War room
 
-One chat runs your project like a commander. You say what you want in plain words; it remembers everything you decide, plans the work, starts helper chats to do it, has AI agents from different companies argue about hard choices, shows progress on one page, and asks for your yes before anything risky.
+You talk to one commander, like the boss of a small AI company. You say what you want in plain words; it remembers everything you decide, plans the work, hires a team of named roles (designer, backend, reviewer…) and hands each job to the right one, has AI agents from different companies argue about hard choices, shows progress on one page, and asks for your yes before anything risky.
 
 ## Start in 3 steps
 
@@ -12,8 +12,8 @@ One chat runs your project like a commander. You say what you want in plain word
    ```
    /war-room:war-room I want to launch a habit app on iOS before December
    ```
-   (Typing `/war-room` and picking it from the list does the same.)
-3. Open the page link the commander gives you. That's it: answer questions and tap Approve there, from your computer or your phone.
+   (Typing `/war-room` and picking it from the list, or just saying "connect war room" in a chat, does the same.)
+3. Open the page link the commander gives you. That's it: type anything into the one box there (the commander picks it up in the background), answer its questions in the same box, and tap Approve for risky steps — from your computer or your phone.
 
 Everything else (starting helper chats, the page, connecting other agents) the commander does for you, and it asks first when something changes your computer's settings.
 
@@ -22,6 +22,8 @@ Everything else (starting helper chats, the page, connecting other agents) the c
 - **Remembers.** Every preference, decision, idea and to-do you mention is stored with its date. It reminds you of past decisions and never asks what it already knows. It never stores passwords, keys or card numbers.
 - **Judges before it plans.** A new idea gets checked for fit, cost, risk and clashes with earlier decisions, and you get a stronger version to choose from: keep / improved / later / drop.
 - **Plans with honest progress.** Milestones with checks, a few goals per day. Bars move only when the commander has re-checked the work itself.
+- **Runs a team.** The commander hires a few named roles for your goal and the page draws them as a chart: you → commander → each member, with what each is doing right now. Tap a member to talk to it directly. Members can come from different companies (a Gemini reviewer checking Claude's work catches more).
+- **Works step by step when it must.** A job can wait for another ("review after build"); the next member starts by itself once the step before is checked.
 - **Starts helper chats itself.** Each helper gets only its task, its files and the rules that apply, works in the background, and reports back. One writer per file. If a helper stops at something that needs your yes, it starts again by itself once you approve.
 - **Lets different AI companies argue.** For a hard question it puts the same question to Claude, Codex, Gemini or Cursor (whichever you have). Each answers blind, then reads the others and argues; it may change its mind only by naming the argument that changed it. You see every answer side by side. Agents from one company share blind spots, so the page says so when only one company took part.
 - **Asks before anything risky.** Pushing code, deploying, publishing, deleting data, spending money, using keys, sending messages for you: each needs your yes for that exact action, once.
@@ -81,7 +83,7 @@ war-room up --phone      # also prints a private link for your phone on the same
 war-room dashboard       # or write a static .warroom/dashboard.html
 ```
 
-**Main** tab: the main goal's progress bar and deadline, today's goals, the milestone bars, the questions waiting on you (answer in place, with the suggested answer one tap away), a box to tell the war room any new thought, and the 5 most recent events. **Details** tab: every chat and what it is doing, every goal with its checks, all tasks, the memory by kind, open messages and the full log, each list folded after 10 rows.
+**Main** tab: a three-line "how this works", the one box to tell the commander anything (its questions sit above the box; tap one to answer, the suggested answer is filled in), your team as a chart with each member's live state, the main goal's progress bar and deadline, today's goals and the 5 most recent events. Approvals appear at the top only when something waits on you. Sending from the box starts a background commander to route your words (turn off with `"autoCommander": false` in `.warroom/config.json`); a message to one member starts that member. **Details** tab: every chat and what it is doing, every goal with its checks, all tasks, the memory by kind, open messages and the full log, each list folded after 10 rows.
 
 Under `serve`, answers and thoughts save straight into the war room and the page refreshes itself when anything changes. The static file shows a copy-and-run command instead.
 
@@ -138,6 +140,7 @@ It is recorded as a decision at once and the question closes.
 | `create_task` / `verify_task` | commander | Hand out and check work |
 | `get_task_packet` / `report_done` | workers | Do one packet, report evidence |
 | `post_message` / `read_messages` | everyone | Requests, contracts, handoffs between agents |
+| `hire` | commander | Add, change or remove a named role on the team (role, what it does, which agent and model) |
 | `start_worker` | commander | Start a helper chat in the background (Claude, Codex, Gemini or Cursor) |
 | `start_debate` / `debate_result` | commander / everyone | Put one question to several agents; blind answers, then they argue |
 | `request_approval` / `check_approval` | everyone | Ask the founder for a yes; check the answer (no tool can approve) |
@@ -146,7 +149,7 @@ Agent names are self-declared. The commander-only checks keep roles clear betwee
 
 ## Data
 
-Plain JSON in `<project>/.warroom/`: `memory.json`, `goals.json`, `tasks.json`, `messages.json`, `log.jsonl`. A file lock keeps several agents from overwriting each other. It has no dependencies; needs Node 18+.
+Plain JSON in `<project>/.warroom/`: `memory.json`, `goals.json`, `tasks.json`, `team.json`, `messages.json`, `runs.json`, `debates.json`, `log.jsonl`. A file lock keeps several agents from overwriting each other. It has no dependencies; needs Node 18+.
 
 ## Security
 

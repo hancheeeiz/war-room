@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const FILES = { memory: [], goals: [], tasks: [], messages: [], approvals: [], runs: [], debates: [] };
+const FILES = { memory: [], goals: [], tasks: [], messages: [], approvals: [], runs: [], debates: [], team: [] };
 
 export const MEMORY_KINDS = ['rule', 'never', 'decision', 'pref', 'fact', 'problem', 'idea', 'todo', 'question'];
 
@@ -143,6 +143,16 @@ export function words(text) {
 export function overlap(a, b) {
   const wb = new Set(words(b));
   return words(a).filter((w) => wb.has(w)).length;
+}
+
+// Two memory items are about the same thing only when they share several real words AND those words are most of
+// the shorter one. Numbers (dates, times, ids) never count: two unrelated facts saved the same minute share them.
+export function sameTopic(a, b) {
+  const real = (t) => words(t).filter((w) => !/^\d+$/.test(w));
+  const wa = real(a);
+  const wb = new Set(real(b));
+  const shared = wa.filter((w) => wb.has(w)).length;
+  return shared >= 3 && shared / Math.max(1, Math.min(wa.length, wb.size)) >= 0.5;
 }
 
 function readJson(f, fallback) {

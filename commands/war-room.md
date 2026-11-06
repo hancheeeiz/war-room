@@ -1,5 +1,5 @@
 ---
-description: Make this chat the war-room commander. Takes in your goal or idea, judges and improves it, then plans milestones, daily goals and work for parallel chats.
+description: Start or reconnect the war room in this project and make this chat its commander (also when the founder says "connect war room" or "start a war room"). Takes in your goal, judges and improves it, hires a team of named roles and hands out the work.
 argument-hint: [your goal or new idea, in plain words]
 ---
 

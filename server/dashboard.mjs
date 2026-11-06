@@ -2,7 +2,7 @@
 // Works as a plain file (answers become copyable commands) or through `war-room serve` (answers save instantly).
 import { starterRules } from './starter-rules.mjs';
 import { now } from './store.mjs';
-import { recipes, runStatus } from './agents.mjs';
+import { recipes, runStatus, stoppedWorkers } from './agents.mjs';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
@@ -74,35 +74,58 @@ export function renderDashboard(store, { live = false } = {}) {
       <ul class="daily">${items.map((i) => `<li class="${i.ok ? 'ok' : ''}"><span class="box">${i.ok ? '✓' : ''}</span><span>${esc(i.text)}</span></li>`).join('') || '<li class="none">No daily goals set yet.</li>'}</ul></section>`;
   }
 
-  const qCards = questions.map((q) => {
-    const m = q.text.match(/^(.*) \(suggested: (.*)\)$/s);
-    const ask = m ? m[1] : q.text;
-    const suggested = m ? m[2] : '';
-    return `<div class="q" data-q="${esc(q.id)}">
-      <div class="qt">${esc(ask)}</div>
-      <div class="meta">${esc(q.id)} · asked ${esc(q.date)} by ${esc(q.source)}</div>
-      ${suggested ? `<div class="quick"><button type="button" data-fill="${esc(suggested)}">Suggested: ${esc(suggested)}</button></div>` : ''}
-      <textarea placeholder="Your answer, any words"></textarea>
-      <div class="row"><button class="send" type="button" data-answer="${esc(q.id)}">Send answer</button><span class="note out"></span></div>
-    </div>`;
+  // ── The team chart: you → commander → each team member, with what each is doing right now ──
+  const team = store.read('team');
+  const stopped = new Set(stoppedWorkers(store).map((r) => r.name));
+  const names = [...new Set([...team.map((m) => m.name), ...tasks.map((t) => t.agent).filter((a) => a && a !== cfg.commander)])];
+  const company = (agent) => recipes()[agent]?.company || '';
+  const memberState = (name) => {
+    const ts = tasks.filter((t) => t.agent === name);
+    const open = ts.find((t) => ['claimed', 'open', 'rejected', 'reported'].includes(t.status));
+    const run = runs.filter((r) => r.name === name).pop();
+    if (run && runStatus(run) === 'running') return ['working', 'Working', open];
+    if (open?.status === 'reported') return ['check', 'Done, being checked', open];
+    if (open?.status === 'claimed') return ['working', 'Working on it', open];
+    if (stopped.has(name)) return ['stopped', 'Stopped — the commander looks at why', open];
+    if (open?.status === 'open' && open.after && tasks.find((t) => t.id === open.after)?.status !== 'verified') return ['wait', `Waits for step ${open.after}`, open];
+    if (open) return ['ready', 'Has work, not started', open];
+    if (ts.length && ts.every((t) => t.status === 'verified')) return ['done', 'All done', null];
+    return ['idle', 'Free', null];
+  };
+  const nodes = names.map((name) => {
+    const m = team.find((x) => x.name === name) || { name, role: 'Helper chat' };
+    const [state, label, task] = memberState(name);
+    const run = runs.filter((r) => r.name === name).pop();
+    const use = m.use || run?.agent || 'claude';
+    const done = tasks.filter((t) => t.agent === name && t.status === 'verified').length;
+    return `<button type="button" class="node s-${state}" data-to="${esc(name)}" title="Talk to ${esc(m.role)}">
+      <span class="n-role">${esc(m.role)}</span><span class="n-name">${esc(name)} · ${esc(use)}${m.model || run?.model ? ` ${esc(m.model || run.model)}` : ''}<i>${esc(company(use))}</i></span>
+      <span class="n-state"><span class="dot"></span>${esc(label)}</span>
+      ${task ? `<span class="n-task">${task.after ? `<b>${esc(task.id)}</b> after ${esc(task.after)} · ` : `<b>${esc(task.id)}</b> · `}${esc(task.title)}</span>` : m.does ? `<span class="n-task">${esc(m.does)}</span>` : ''}
+      <span class="n-foot">${done} done</span></button>`;
   }).join('');
-  const needs = `<section class="card desk"><div class="card-h"><h2>Needs you</h2>${questions.length ? `<span class="pill warn">${questions.length}</span>` : ''}</div>
-    ${qCards || '<p class="empty">Nothing waits on you.</p>'}
-    ${reports.length ? `<p class="note">${reports.length} finished task${reports.length > 1 ? 's' : ''} waiting for the commander to check.</p>` : ''}
-    <div class="divider"></div>
-    <h2>Tell the war room anything</h2>
-    <div class="q"><textarea id="thought" placeholder="A new idea, a change of mind, a worry. Any words."></textarea>
-    <div class="row"><button class="send" type="button" id="thoughtSend">Send</button><span class="note out"></span></div></div>
-  </section>`;
+  const cmdRun = runs.filter((r) => r.name === cfg.commander).pop();
+  const cmdBusy = cmdRun && runStatus(cmdRun) === 'running';
+  const board = `<section class="card board-card"><div class="card-h"><h2>Your team</h2><span class="meta">${working.size} working · ${names.length} member${names.length === 1 ? '' : 's'}</span></div>
+    <p class="why">You only talk to the commander. It picks who does each job, checks the work, and tells you when something needs your yes. Tap anyone to talk to them directly.</p>
+    <div class="org">
+      <div class="tier"><div class="node me"><span class="n-role">You</span><span class="n-name">the founder</span></div></div>
+      <div class="tier"><button type="button" class="node boss ${cmdBusy ? 's-working' : ''}" data-to="commander"><span class="n-role">Commander</span><span class="n-name">${esc(cfg.commander)} · plans, hands out work, checks it</span><span class="n-state"><span class="dot"></span>${cmdBusy ? 'Reading your message and routing it' : questions.length ? `Waiting on you (${questions.length} question${questions.length > 1 ? 's' : ''})` : reports.length ? `${reports.length} report${reports.length > 1 ? 's' : ''} to check` : 'Ready'}</span></button></div>
+      ${nodes ? `<div class="tier team">${nodes}</div>` : '<p class="note center">No team yet. Tell the commander your goal; it hires the roles it needs (designer, backend, reviewer…) and they show up here.</p>'}
+    </div>
+    <p class="note">Step-by-step work shows as <b>t2 after t1</b>: the next member starts by itself once the step before is checked.</p></section>`;
 
-  const agents = [...new Set([...tasks.map((t) => t.agent), ...running.map((r) => r.name)])];
-  const party = agents.map((a) => {
-    const ts = tasks.filter((t) => t.agent === a);
-    const live = ts.find((t) => t.status !== 'verified');
-    return `<div class="hud-card ${working.has(a) ? 'working' : ''}"><div class="hud-who"><span class="dot"></span>${esc(a)}<small>${ts.filter((t) => t.status === 'verified').length}/${ts.length} done</small></div>
-      <div class="${live ? 'hud-do' : 'hud-last'}">${live ? `${esc(live.status)} · ${esc(live.title)}` : 'Idle'}</div>${(() => { const r = running.find((x) => x.name === a); return r ? `<div class="hud-last">${esc(r.agent)}${r.model ? ` ${esc(r.model)}` : ''} · running since ${esc(r.started.slice(11))}</div>` : live?.model ? `<div class="hud-last">${esc(live.model)} model</div>` : ''; })()}</div>`;
+  // ── One box to talk: to the commander (default), answering one of its questions, or to one team member ──
+  const qChips = questions.map((q) => {
+    const m = q.text.match(/^(.*) \(suggested: (.*)\)$/s);
+    return `<div class="ask" data-q="${esc(q.id)}" data-sug="${esc(m ? m[2] : '')}"><span class="ask-k">Commander asks</span><span class="ask-t">${esc(m ? m[1] : q.text)}</span>${m ? `<span class="ask-s">Suggested: ${esc(m[2])}</span>` : ''}<span class="ask-go">Answer →</span></div>`;
   }).join('');
-  const chatsCard = `<section class="card"><div class="card-h"><h2>Chats</h2><span class="meta">${working.size} working</span></div>${party ? `<div class="party">${party}</div>` : '<p class="note">No chats have work yet.</p>'}</section>`;
+  const talk = `<section class="card talk"><div class="card-h"><h2>Tell the commander</h2></div>
+    ${qChips ? `<div class="asks">${qChips}</div>` : ''}
+    <div class="to-row"><span class="to-k">To</span><span id="toLabel" class="to-v">Commander</span><button type="button" class="link small" id="toReset" hidden>back to commander</button></div>
+    <textarea id="say" placeholder="Anything in your own words: a goal, an idea, a change of mind, a worry."></textarea>
+    <div class="row"><button class="send" type="button" id="sayBtn">Send</button><span class="note out" id="sayOut"></span></div>
+    <p class="why">It starts working on it in the background right away — you do not need to open a chat.</p></section>`;
 
   const recent = log.slice(0, 5).map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`).join('');
   const recentCard = `<section class="card"><div class="card-h"><h2>Recent</h2><span class="meta">last 5</span></div>${recent || '<p class="note">Nothing yet.</p>'}<button class="link" type="button" data-go="details">See everything in Details →</button></section>`;
@@ -124,30 +147,22 @@ export function renderDashboard(store, { live = false } = {}) {
     <p class="note">One approval covers that one action, once, for 30 minutes.</p></section>` : '';
 
   // Debates: every agent's final answer side by side, with the company behind it.
-  const company = (seat) => recipes()[String(seat).split(':')[0]]?.company || '';
   const debateCard = (d, full) => {
     const last = d.results?.[d.results.length - 1] || [];
     const finals = d.finals || last.map((a) => ({ seat: a.seat, final: a.ok ? (a.final || '…') : a.text }));
     const seats = finals.length ? finals : d.seats.map((s) => ({ seat: s.seat, final: d.status === 'done' ? '' : 'thinking…' }));
-    const rounds = full ? (d.results || []).map((round, i) => `<details class="ms"><summary><span class="tag">R${i + 1}</span>${i ? 'After reading the others' : 'Blind answers'}</summary>${round.map((a) => `<div class="item"><div class="meta">${esc(a.seat)} · ${esc(company(a.seat))}${a.ok ? '' : ' · failed'}</div><div class="plain pre">${esc(a.text)}</div></div>`).join('')}</details>`).join('') : '';
+    const rounds = full ? (d.results || []).map((round, i) => `<details class="ms"><summary><span class="tag">R${i + 1}</span>${i ? 'After reading the others' : 'Blind answers'}</summary>${round.map((a) => `<div class="item"><div class="meta">${esc(a.seat)} · ${esc(company(String(a.seat).split(':')[0]))}${a.ok ? '' : ' · failed'}</div><div class="plain pre">${esc(a.text)}</div></div>`).join('')}</details>`).join('') : '';
     return `<section class="card debate"><div class="card-h"><h2>Debate ${esc(d.id)} · ${esc(d.status)}</h2><span class="meta">${esc(d.created)}</span></div>
       <div class="goal">${esc(d.question)}</div>
       ${d.companies?.length < 2 ? '<p class="note">All seats are from one company, so agreement here is weak evidence.</p>' : ''}
-      <div class="seats">${seats.map((f) => `<div class="hud-card ${d.status === 'running' ? 'working' : ''}"><div class="hud-who"><span class="dot"></span>${esc(f.seat)}<small>${esc(company(f.seat))}</small></div><div class="hud-last">${esc(f.final)}</div></div>`).join('')}</div>${rounds}</section>`;
+      <div class="seats">${seats.map((f) => `<div class="hud-card ${d.status === 'running' ? 'working' : ''}"><div class="hud-who"><span class="dot"></span>${esc(f.seat)}<small>${esc(company(String(f.seat).split(':')[0]))}</small></div><div class="hud-last">${esc(f.final)}</div></div>`).join('')}</div>${rounds}</section>`;
   };
   const latestDebate = debates[debates.length - 1];
   const mainDebate = latestDebate && (latestDebate.status !== 'done' || String(latestDebate.finished || latestDebate.created).startsWith(today)) ? debateCard(latestDebate, false) : '';
 
-  const kpis = [
-    ['Main goal', `${goalPct}%`, main ? 'checks verified' : 'no goal yet', goalPct ? 'accent' : ''],
-    ['Today', `${todayDone}/${todayTotal}`, 'daily goals done', todayTotal && todayDone === todayTotal ? 'ok' : ''],
-    ['Chats', `${working.size}/${agents.length}`, 'working now', working.size ? 'ok' : ''],
-    ['Needs you', questions.length + toApprove, questions.length + toApprove ? `${toApprove} to approve · ${questions.length} to answer` : 'all clear', questions.length + toApprove ? 'warn' : 'ok'],
-  ].map(([k, v, sub, tone]) => `<div class="kpi t-${tone}"><span class="kpi-k">${k}</span><b>${esc(v)}</b><span class="kpi-s">${esc(sub)}</span></div>`).join('');
-  const mainPane = `${approveCard}<div class="kpis">${kpis}</div>
-    <div class="grid g-main"><div class="col">${goalPanel}</div><div class="col">${todayPanel}${chatsCard}</div></div>
-    ${mainDebate}
-    <div class="grid g-desk"><div class="col">${needs}</div><div class="col">${recentCard}</div></div>`;
+  const mainPane = `${approveCard}
+    <div class="grid g-main"><div class="col">${talk}${board}</div><div class="col">${goalPanel}${todayPanel}${recentCard}</div></div>
+    ${mainDebate}`;
 
   // ── DETAILS TAB ─────────────────────────────────────
   const goalCards = goals.map((g) => `<section class="card"><h2>${g === main ? 'Main goal' : 'Goal'} · ${esc(g.status)}</h2>
@@ -205,7 +220,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--font);pa
 .top{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--line)}
 .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.2em;color:var(--accent);margin-bottom:4px}
 .grid{display:grid;gap:18px;align-items:start}.col{display:grid;gap:18px;min-width:0}
-.g-main{grid-template-columns:1.5fr 1fr}.g-desk{grid-template-columns:1.2fr 1fr}.g-2{grid-template-columns:1fr 1fr}
+.g-main{grid-template-columns:1.35fr 1fr}.g-desk{grid-template-columns:1.2fr 1fr}.g-2{grid-template-columns:1fr 1fr}
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
 .kpi{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:14px 16px;display:grid;gap:2px}
 .kpi-k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600}
@@ -232,6 +247,26 @@ h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute
 @media (max-width:860px){.tabs{width:100%;position:sticky;top:8px;z-index:3}}
 .tabs button{border:0;background:none;color:var(--muted);padding:9px;border-radius:9px;font-weight:600}
 .tabs button.on{background:var(--accent);color:var(--accent-ink)}
+.how{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.how li{display:flex;gap:10px;align-items:flex-start;font-size:13.5px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px}.how b{flex:none;width:22px;height:22px;border-radius:50%;background:var(--surface2);color:var(--accent);display:grid;place-items:center;font-family:var(--mono);font-size:12px}
+@media (max-width:860px){.how{grid-template-columns:1fr;gap:6px}.how li{padding:7px 10px;font-size:12.5px}}
+.why{color:var(--muted);font-size:13px;margin:0 0 12px}.talk .why{margin:10px 0 0}
+.asks{display:grid;gap:8px;margin-bottom:12px}
+.ask{display:grid;gap:2px;text-align:left;border:1px solid #e2a64f55;background:#e2a64f0d;border-radius:10px;padding:9px 12px;cursor:pointer}.ask.on{border-color:var(--warn);box-shadow:0 0 0 1px var(--warn) inset}
+.ask-k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--warn);font-weight:600}.ask-t{font-weight:600}.ask-s{font-size:12.5px;color:var(--muted)}.ask-go{font-size:12.5px;color:var(--accent)}
+.to-row{display:flex;gap:8px;align-items:baseline;margin-bottom:6px;font-size:13px}.to-k{color:var(--muted)}.to-v{font-weight:600;color:var(--accent)}.link.small{padding:0;font-size:12.5px}
+.talk textarea{min-height:84px}
+.org{display:grid;gap:22px;position:relative}
+.tier{display:flex;justify-content:center;flex-wrap:wrap;gap:10px;position:relative}
+.tier+.tier::before{content:"";position:absolute;top:-22px;left:50%;height:22px;border-left:1px dashed #3a2f66}
+.tier.team{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));border-top:1px dashed #3a2f66;padding-top:14px}
+.node{font:inherit;color:var(--ink);text-align:left;display:grid;gap:3px;min-width:0;border:1px solid #3a2f66;background:#17142a;border-radius:10px;padding:10px 12px;cursor:pointer}
+.node:hover{border-color:var(--accent)}.node.me{cursor:default;background:var(--surface2);border-color:var(--line);text-align:center;min-width:160px}
+.node.boss{min-width:260px;max-width:420px;border-color:var(--accent);background:linear-gradient(160deg,#211a3d,#17142a)}
+.n-role{font-weight:600}.n-name{font-family:var(--mono);font-size:11.5px;color:var(--muted);overflow-wrap:anywhere}.n-name i{font-style:normal;margin-left:6px;color:#a99be0}
+.n-state{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--muted)}.n-task{font-size:12.5px;color:var(--ink);overflow-wrap:anywhere}.n-task b{font-family:var(--mono);font-weight:500;color:var(--accent)}.n-foot{font-size:11px;color:var(--muted);font-family:var(--mono)}
+.s-working{border-color:var(--ok)}.s-working .dot{background:var(--ok);box-shadow:0 0 8px var(--ok);animation:pulse 1.4s infinite}.s-working .n-state{color:var(--ok)}
+.s-check .dot,.s-ready .dot{background:var(--warn)}.s-check .n-state{color:var(--warn)}.s-stopped{border-color:#f2766c88}.s-stopped .dot{background:var(--bad)}.s-stopped .n-state{color:var(--bad)}
+.s-wait .dot{background:#6b6580}.s-done .dot{background:var(--ok)}.center{text-align:center}
 .pane{display:none;gap:18px}.pane.on{display:grid}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px;min-width:0}
 .q{display:grid;gap:8px}.q+.q{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
@@ -285,6 +320,7 @@ ul.daily li{display:flex;gap:10px;align-items:flex-start;padding:6px 0}ul.daily 
 </style></head><body><div class="wrap">
 <header class="top"><div><div class="eyebrow">WAR ROOM</div><h1>${esc(cfg.project)}</h1><div class="sub">${esc(now())}${live ? ' · live' : ' · snapshot'}</div><div class="pills">${pills}</div></div>
 <nav class="tabs"><button type="button" class="on" data-go="main">Main</button><button type="button" data-go="details">Details</button></nav></header>
+<ol class="how"><li><b>1</b>Tell the commander what you want, in any words.</li><li><b>2</b>It hands each job to the right team member and checks the work.</li><li><b>3</b>You only step in to answer a question or approve a risky step (push, deploy, money, deleting).</li></ol>
 <div class="pane on" id="main">${mainPane}</div>
 <div class="pane" id="details">${details}</div>
 </div>
@@ -300,10 +336,18 @@ async function post(path,body,out,fallback){
   if(!LIVE){out.className='note out';out.textContent='Copy and run in a terminal (or open this page with war-room serve to send from here):';const c=document.createElement('code');c.textContent=fallback;out.append(document.createElement('br'),c);return false}
   try{const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json','x-war-room-token':TOKEN},body:JSON.stringify(body)});const j=await r.json();if(!r.ok)throw new Error(j.error||'failed');out.className='note out ok';out.textContent='Saved. The commander has it now.';return true}
   catch(e){out.className='note out bad';out.textContent='Not saved: '+e.message;return false}}
-document.querySelectorAll('[data-answer]').forEach(b=>b.onclick=async()=>{const q=b.closest('.q'),text=q.querySelector('textarea').value.trim(),out=q.querySelector('.out');if(!text){out.className='note out bad';out.textContent='Type an answer first.';return}
-  b.disabled=true;if(await post('/api/answer',{questionId:b.dataset.answer,text},out,'war-room answer --question '+b.dataset.answer+' --text '+shq(text)))setTimeout(()=>location.reload(),900);else b.disabled=false});
-document.getElementById('thoughtSend').onclick=async e=>{const t=document.getElementById('thought'),out=e.target.parentElement.querySelector('.out'),text=t.value.trim();if(!text)return;
-  e.target.disabled=true;if(await post('/api/thought',{text},out,'war-room call post_message '+shq(JSON.stringify({agent:'founder',to:'commander',kind:'info',text}))))t.value='';e.target.disabled=false};
+// The one talk box: who it goes to is shown above it; tapping a team member or a question changes that.
+const say=document.getElementById('say'),sayOut=document.getElementById('sayOut'),toLabel=document.getElementById('toLabel'),toReset=document.getElementById('toReset');
+let target={};
+function aim(t,label,hint){target=t;toLabel.textContent=label;toReset.hidden=!t.to&&!t.answer;say.placeholder=hint;document.querySelectorAll('.ask').forEach(a=>a.classList.toggle('on',a.dataset.q===t.answer));say.focus()}
+toReset.onclick=()=>aim({},'Commander','Anything in your own words: a goal, an idea, a change of mind, a worry.');
+document.querySelectorAll('.ask').forEach(a=>a.onclick=()=>{aim({answer:a.dataset.q},'Commander · answering '+a.dataset.q,'Your answer, any words.');if(a.dataset.sug&&!say.value)say.value=a.dataset.sug});
+document.querySelectorAll('[data-to]').forEach(n=>n.onclick=()=>{const to=n.dataset.to;if(to==='commander')return toReset.onclick();aim({to},n.querySelector('.n-role').textContent+' ('+to+')','Message for '+to+' only. The commander still sees its report.');scrollTo({top:say.getBoundingClientRect().top+scrollY-120,behavior:'smooth'})});
+document.getElementById('sayBtn').onclick=async e=>{const text=say.value.trim();if(!text){sayOut.className='note out bad';sayOut.textContent='Type something first.';return}
+  e.target.disabled=true;const body={text,...target};
+  const fallback=target.answer?'war-room answer --question '+target.answer+' --text '+shq(text):'war-room call post_message '+shq(JSON.stringify({agent:'founder',to:target.to||'commander',kind:'info',text}));
+  if(await post('/api/say',body,sayOut,fallback)){say.value='';sayOut.textContent=target.to?'Sent to '+target.to+'. It starts on it in the background.':target.answer?'Answer saved. The commander carries on.':'Sent. The commander is on it in the background; the team chart shows who it hands the work to.';setTimeout(()=>location.reload(),2500)}
+  e.target.disabled=false};
 document.querySelectorAll('[data-approve]').forEach(b=>b.onclick=async()=>{const box=b.closest('.ap'),out=box.querySelector('.out'),yes=b.dataset.yes==='1';
   if(yes&&!confirm('Approve '+b.dataset.approve+'? It will run once.'))return;box.querySelectorAll('button').forEach(x=>x.disabled=true);
   if(await post('/api/approve',{id:b.dataset.approve,yes},out,'war-room approve --id '+b.dataset.approve+(yes?' --yes':' --no')))setTimeout(()=>location.reload(),900);else box.querySelectorAll('button').forEach(x=>x.disabled=false)});

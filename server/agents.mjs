@@ -94,10 +94,14 @@ export function workerPrompt(name) {
   return `You are "${name}" in the war room. Call war_room_brief with agent "${name}", then get_task_packet. Do only that task, inside its files. Check your work, then call report_done with the evidence (and notVerified for anything you could not check). Never push, deploy, publish, delete data or spend money: those need the founder's yes. If the guard stopped a command and the founder has since approved it (your messages, or check_approval), run that exact same command again now. If you are blocked, remember it as kind "problem" and post_message to the commander.`;
 }
 
-export function startWorker(store, { name, agent = 'claude', model }) {
+export function commanderPrompt(name) {
+  return `You are "${name}", the war-room commander, started in the background because the founder wrote on the war-room page. Call war_room_brief with agent "${name}", then read_messages. For each founder message: if memory or the plan already answers it, act on it; if it is new work, route it — pick the right team member (hire one if the role is missing), create_task with a clear done check, then start_worker for that member; if it answers a question, record it; if you need a decision, ask_founder with one plain question and your suggested answer. Close each message with read_messages close=[ids] and a one-line reply saying what you did, in plain words. Do not build things yourself; your job is to route and check. Never push, deploy, publish, delete data or spend money.`;
+}
+
+export function startWorker(store, { name, agent = 'claude', model, prompt }) {
   if (!/^[\w.-]{1,40}$/.test(name)) throw new Error('Worker name: letters, numbers, dot, dash or underscore only.');
   const seat = { agent, model };
-  const cmd = commandFor(seat, 'work', workerPrompt(name));
+  const cmd = commandFor(seat, 'work', prompt || workerPrompt(name));
   if (agent === 'claude' && !claudeHasPluginInstalled()) cmd.args.push('--plugin-dir', PLUGIN_ROOT);
   const project = path.dirname(store.root);
   fs.mkdirSync(path.join(store.root, 'runs'), { recursive: true });
@@ -112,6 +116,25 @@ export function startWorker(store, { name, agent = 'claude', model }) {
     store.log({ agent: 'war-room', event: 'worker_started', id: run.id, text: `${name} (${agent}${model ? ` ${model}` : ''})` });
     return run;
   });
+}
+
+// The founder wrote on the page: start a background commander to route it, unless one is already running
+// (it reads every open message, so one run is enough). Off with "autoCommander": false in .warroom/config.json.
+export function wakeCommander(store) {
+  const cfg = store.config();
+  if (cfg.autoCommander === false || !which(recipes().claude.bin)) return null;
+  const last = store.read('runs').filter((r) => r.name === cfg.commander).pop();
+  if (last && runStatus(last) === 'running') return null;
+  return startWorker(store, { name: cfg.commander, agent: 'claude', model: cfg.commanderModel, prompt: commanderPrompt(cfg.commander) });
+}
+
+// The founder wrote to one team member directly: start it so it reads the message (if it is not already running).
+export function wakeMember(store, name) {
+  const member = store.read('team').find((m) => m.name === name);
+  if (!member) return null;
+  const last = store.read('runs').filter((r) => r.name === name).pop();
+  if (last && runStatus(last) === 'running') return null;
+  return startWorker(store, { name, agent: member.use || 'claude', model: member.model, prompt: `${workerPrompt(name)} The founder sent you a message: read_messages first, do what it asks if it fits your task, and reply by closing it with a short plain answer.` });
 }
 
 export function alive(pid) {

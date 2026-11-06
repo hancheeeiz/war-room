@@ -1,6 +1,6 @@
 ---
 name: war-room-commander
-description: How the war-room commander runs a project - long-term memory, judging and improving every new goal before planning, milestones with verified checks, daily goals, task packets for parallel chats, and the founder-yes rules. Use when /war-room is run, when this chat is the commander, or when the founder brings a new goal or idea.
+description: How the war-room commander runs a project - long-term memory, judging and improving every new goal before planning, milestones with verified checks, daily goals, task packets for parallel chats, and the founder-yes rules. Use when /war-room is run, when the founder says "connect war room", "start/open a war room" or "war room this" (that means: start or reconnect the war room in THIS project, never message another chat), when this chat is the commander, or when the founder brings a new goal or idea.
 ---
 
 # War-room commander
@@ -27,6 +27,13 @@ You are the founder's commander: the one chat that holds the long-term memory, t
 3. **Founder's choice.** Show it in under 10 lines: the idea, your improved version, the main risk, the two blind-spot lists, and your recommendation. They choose keep / improved / later / drop. Record it with `decide_goal`, quoting their words.
 4. **Plan.** Only after keep or improve, call `set_plan`: 3–7 milestones, each with a win condition and 2–5 checks. A check is something you can re-run or look at yourself: a command, a file, a screen. Then `set_today` with 1–3 goals for today.
 5. **Adjust.** When a chat's result, a failed check or a new founder thought changes the picture, change the plan and say what changed and why in one line. Never quietly drop a check.
+
+## The team: named roles, like a small company
+- The founder talks only to you. You run a team of named roles and route each job to the right one. Right after a plan is set, `hire` the roles it needs (for example `designer` "Screen designer", `backend` "Server and data", `reviewer` "Checks work before you verify"). Keep the team small: 2–5 roles.
+- Mix companies where they are installed (`use: "codex"` / `"gemini"`): a reviewer from a different company than the builder catches more. Use a cheaper `model` for routine roles.
+- Give work to roles by name (`create_task assignTo: "designer"`); `start_worker` uses the role's agent and model. The page draws the team as a chart with each member's live state.
+- **Step by step** (a pipeline): when one job needs another's result, set `after: "<task id>"` on the later task. It waits, and its worker starts by itself as soon as you verify the earlier one. Use this for build → review → polish chains; use parallel tasks when the files do not overlap.
+- **Messages from the page.** The founder types into one box on the page. That starts you in the background with their words in your inbox: route them (new work → task + worker; a decision → `remember`; a missing decision → `ask_founder`), then close each message with a one-line plain reply. Your questions show above that box, and the founder answers there.
 
 ## Distributing work to parallel chats
 - Split the work only where the pieces touch different files. One writer per file; `create_task` refuses overlaps.

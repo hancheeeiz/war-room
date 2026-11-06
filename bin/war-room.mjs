@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
-import { resumeAfterApproval } from '../server/agents.mjs';
+import { resumeAfterApproval, wakeCommander, wakeMember } from '../server/agents.mjs';
 import { STARTER_RULES, starterRules } from '../server/starter-rules.mjs';
 import { autoRemember, brief, callTool, consumeApproval, requestApproval, resolveApproval, ruleInForce } from '../server/tools.mjs';
 
@@ -102,7 +102,7 @@ async function serve(opts = {}) {
   let token = (opts.keepLink ?? rest.includes('--keep-link')) && fs.existsSync(keepFile) ? fs.readFileSync(keepFile, 'utf8').trim() : crypto.randomBytes(24).toString('base64url');
   if (lan) fs.writeFileSync(keepFile, token, { mode: 0o600 });
   const tokenOk = (got) => !lan || (typeof got === 'string' && got.length === token.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(token)));
-  const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals', 'runs', 'debates'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
+  const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals', 'runs', 'debates', 'team'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
     + (fs.existsSync(`${store.root}/log.jsonl`) ? fs.statSync(`${store.root}/log.jsonl`).mtimeMs : 0);
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
   const actions = {
@@ -112,6 +112,31 @@ async function serve(opts = {}) {
       if (!out.error) autoRemember(store, { kind: 'idea', text: String(b.text), source: 'founder' });
       return out;
     },
+    // The one box on the page: tell the commander anything, answer one of its questions, or talk to one team member.
+    // Whoever it is for is started in the background to handle it, so the founder never has to open a chat.
+    '/api/say': (b) => {
+      const text = String(b.text);
+      const commander = store.config().commander;
+      let out;
+      if (b.answer) {
+        out = callTool(store, 'founder_answer', { agent: commander, questionId: String(b.answer), founderWords: text });
+        if (!out.error) callTool(store, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: `Founder answered ${b.answer}: ${text}` });
+      } else if (b.to && b.to !== commander && b.to !== 'commander') {
+        if (!store.read('team').some((m) => m.name === b.to)) return { error: `No team member ${b.to}.` };
+        out = callTool(store, 'post_message', { agent: 'founder', to: String(b.to), kind: 'request', text: `From the founder: ${text}` });
+      } else {
+        out = callTool(store, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: `Founder: ${text}` });
+        if (!out.error) autoRemember(store, { kind: 'idea', text, source: 'founder' });
+      }
+      if (out.error) return out;
+      try {
+        const run = b.to && b.to !== 'commander' && !b.answer ? wakeMember(store, String(b.to)) : wakeCommander(store);
+        return { text: run ? `started ${run.name}` : 'queued' };
+      } catch (e) {
+        autoRemember(store, { kind: 'problem', text: `Could not start a chat for the founder's message: ${e.message}`, source: 'war-room page' });
+        return { text: 'queued' };
+      }
+    },
     '/api/approve': (b) => {
       try {
         const ap = resolveApproval(store, { id: String(b.id), yes: b.yes === true, by: 'founder (war-room page)' });
@@ -120,7 +145,15 @@ async function serve(opts = {}) {
         return { text: 'ok' };
       } catch (e) { return { error: e.message }; }
     },
-    '/api/goal': (b) => callTool(store, 'decide_goal', { agent: store.config().commander, goalId: String(b.goalId), choice: String(b.choice), founderWords: `chose "${b.choice}" on the war-room page` }),
+    '/api/goal': (b) => {
+      const out = callTool(store, 'decide_goal', { agent: store.config().commander, goalId: String(b.goalId), choice: String(b.choice), founderWords: `chose "${b.choice}" on the war-room page` });
+      // A kept goal needs a plan next: let the commander carry on without the founder opening a chat.
+      if (!out.error && ['keep', 'improve'].includes(String(b.choice))) {
+        callTool(store, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: `Founder chose "${b.choice}" for goal ${b.goalId} on the page. Plan it: set_plan, hire the roles it needs, hand out the first tasks.` });
+        try { wakeCommander(store); } catch {}
+      }
+      return out;
+    },
   };
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
@@ -139,11 +172,11 @@ async function serve(opts = {}) {
       req.on('end', () => {
         let b = {};
         try { b = JSON.parse(body); } catch { return json(res, 400, { error: 'Bad request.' }); }
-        if (['/api/answer', '/api/thought'].includes(url.pathname) && !String(b.text || '').trim()) return json(res, 400, { error: 'Empty.' });
+        if (['/api/answer', '/api/thought', '/api/say'].includes(url.pathname) && !String(b.text || '').trim()) return json(res, 400, { error: 'Empty.' });
         const out = actions[url.pathname](b);
         if (out.error) return json(res, 400, { error: out.error });
         notify(store, `Founder used the war-room page (${url.pathname.slice(5)}).`);
-        return json(res, 200, { ok: true });
+        return json(res, 200, { ok: true, result: out.text });
       });
       return;
     }

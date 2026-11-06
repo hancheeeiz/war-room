@@ -235,7 +235,7 @@ test('memory map auto-stores problems and ideas', async (tc) => {
   assert.match(html, /Memory map/);
   assert.match(html, /Problems by chat/);
   const mainPane = html.slice(html.indexOf('id="main"'), html.indexOf('id="details"'));
-  assert.match(mainPane, /Chats/, 'chats are on the main tab');
+  assert.match(mainPane, /Your team/, 'the team chart is on the main tab');
 });
 
 test('approvals: page buttons, phone token, guard uses an exact approval once', async (tc) => {

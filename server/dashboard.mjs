@@ -3,6 +3,7 @@
 import { starterRules } from './starter-rules.mjs';
 import { now } from './store.mjs';
 import { recipes, runStatus, stoppedWorkers } from './agents.mjs';
+import { markdownToHtml, readShelfItem } from './shelf.mjs';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
@@ -58,7 +59,7 @@ export function renderDashboard(store, { live = false } = {}) {
     goalPct = pct(done, checks.length);
     const items = (main.daily?.[today] || []).map((it) => {
       const t = tasks.find((x) => x.id === it.taskId);
-      return { text: it.text, ok: t ? t.status === 'verified' : !!it.done };
+      return { text: it.text, taskId: it.taskId, ok: t ? t.status === 'verified' : !!it.done };
     });
     todayTotal = items.length;
     todayDone = items.filter((i) => i.ok).length;
@@ -71,7 +72,10 @@ export function renderDashboard(store, { live = false } = {}) {
       ${levelRows(main) || '<p class="boss-sub">No plan yet.</p>'}
     </section>`;
     todayPanel = `<section class="card today-panel"><div class="card-h"><h2>Today</h2><span class="meta">${todayDone}/${todayTotal} done</span></div>
-      <ul class="daily">${items.map((i) => `<li class="${i.ok ? 'ok' : ''}"><span class="box">${i.ok ? '✓' : ''}</span><span>${esc(i.text)}</span></li>`).join('') || '<li class="none">No daily goals set yet.</li>'}</ul></section>`;
+      <ul class="daily">${items.map((i, n) => (i.taskId
+        ? `<li class="${i.ok ? 'ok' : ''}" title="Ticks itself when task ${esc(i.taskId)} is verified"><span class="box">${i.ok ? '✓' : ''}</span><span>${esc(i.text)} <span class="meta">${esc(i.taskId)}</span></span></li>`
+        : `<li class="${i.ok ? 'ok' : ''}"><button type="button" class="box tick" data-tick="${n}" data-goal="${esc(main.id)}" data-text="${esc(i.text)}" data-done="${i.ok ? 1 : 0}" aria-label="${i.ok ? 'Mark not done' : 'Mark done'}: ${esc(i.text)}">${i.ok ? '✓' : ''}</button><span>${esc(i.text)}</span></li>`)).join('') || '<li class="none">No daily goals set yet.</li>'}</ul>
+      ${items.some((i) => !i.taskId) ? '<p class="note">Tap a box to tick a goal yourself. Goals linked to a task tick themselves once the task is checked.</p>' : ''}<span class="note out" id="tickOut"></span></section>`;
   }
 
   // ── The team chart: you → commander → each team member, with what each is doing right now ──
@@ -204,6 +208,32 @@ export function renderDashboard(store, { live = false } = {}) {
     <div class="grid g-2"><div class="col" id="d-msgs"><section class="card"><div class="card-h"><h2>Open messages</h2><span class="meta">${msgRows.length}</span></div>${capped(msgRows) || '<p class="note">None.</p>'}</section></div>
       <div class="col" id="d-log"><section class="card"><div class="card-h"><h2>Full log</h2><span class="meta">${logRows.length}</span></div>${capped(logRows) || '<p class="note">Nothing yet.</p>'}</section></div></div>`;
 
+  // ── SHELF TAB ───────────────────────────────────────
+  // Documents to reread. Each is read from the project file now, never from a stored copy.
+  const shelf = store.read('shelf');
+  const sections = [];
+  for (const b of shelf) {
+    const sec = sections.find((x) => x.name === b.category) || sections[sections.push({ name: b.category, books: [] }) - 1];
+    sec.books.push(b);
+  }
+  const books = shelf.map((b) => {
+    const r = readShelfItem(store, b);
+    return `<article class="book card" id="book-${esc(b.id)}" hidden>
+      <div class="book-bar"><button type="button" class="link small" data-close-book>← Back to the shelf</button><span class="meta">${esc(b.category)} · ${esc(b.path)}</span></div>
+      ${r.error ? `<p class="note out bad">Cannot show this file: ${esc(r.error)}</p>` : `<div class="md">${markdownToHtml(r.text)}</div>`}
+      <div class="book-bar foot"><button type="button" class="link small" data-close-book>← Back to the shelf</button><span class="meta">on the shelf since ${esc(b.added)}</span></div></article>`;
+  }).join('');
+  const shelfList = sections.map((sec) => `<section class="card"><div class="card-h"><h2>${esc(sec.name)}</h2><span class="meta">${sec.books.length}</span></div>
+    ${sec.books.map((b) => `<button type="button" class="spine" data-book="${esc(b.id)}"><span class="spine-t">${esc(b.title)}</span><span class="meta">${esc(b.path)} · ${esc(String(b.added).slice(0, 10))}</span></button>`).join('')}</section>`).join('');
+  const learnCards = goals.filter((g) => g.verdict?.learn?.length && !['done', 'later'].includes(g.status)).map((g) => {
+    const notes = shelf.filter((b) => b.goalId === g.id);
+    return `<section class="card"><div class="card-h"><h2>To learn for: ${esc(g.title)}</h2><span class="meta">${g.verdict.learn.filter((t) => notes.some((b) => b.topic === t)).length}/${g.verdict.learn.length} written</span></div>
+    ${g.verdict.learn.map((t) => { const b = notes.find((x) => x.topic === t); return b ? `<button type="button" class="spine" data-book="${esc(b.id)}"><span class="spine-t">${esc(t)}</span><span class="meta">Read the note</span></button>` : `<div class="spine"><span class="spine-t">${esc(t)}</span><span class="meta">Note not written yet</span></div>`; }).join('')}</section>`;
+  }).join('');
+  const showShelf = shelf.length > 0 || learnCards !== '';
+  const shelfPane = `<div id="shelfList" class="shelf">${learnCards}${shelfList || learnCards || '<section class="card"><h2>Shelf</h2><p class="note">Nothing on the shelf yet. Ask the commander to shelve a note, e.g. "put docs/notes/01.md on the shelf".</p></section>'}
+    <p class="note">The shelf shows each file as it is in the project right now; nothing is copied. The commander adds or removes files with the <code>shelve</code> tool.</p></div>${books}`;
+
   const pills = [
     questions.length + toApprove ? `<span class="pill warn">${questions.length + toApprove} waiting on you</span>` : '<span class="pill ok">Nothing waits on you</span>',
     `<span class="pill ${working.size ? 'ok' : ''}">${working.size} chat${working.size === 1 ? '' : 's'} working</span>`,
@@ -214,7 +244,7 @@ export function renderDashboard(store, { live = false } = {}) {
 <title>War room · ${esc(cfg.project)}</title>
 <style>
 :root{--bg:#0e0d12;--surface:#17151d;--surface2:#201d29;--ink:#eeeaf6;--muted:#a09bb0;--line:#2d2938;--accent:#a184f2;--accent-ink:#130c26;--ok:#5ac38a;--warn:#e2a64f;--bad:#f2766c;--font:"Geist",system-ui,-apple-system,sans-serif;--mono:"Geist Mono",ui-monospace,Menlo,monospace;color-scheme:dark}
-*{box-sizing:border-box}
+*{box-sizing:border-box}[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--font);padding:18px 16px 48px}
 .wrap{max-width:1120px;margin:0 auto;display:grid;gap:22px}
 .top{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--line)}
@@ -243,10 +273,24 @@ h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute
 .sub,.meta{font-family:var(--mono);font-size:12px;color:var(--muted)}.sub{font-size:13px;margin-top:2px}
 .pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .pill{font-size:12.5px;padding:3px 10px;border-radius:999px;background:var(--surface2);color:var(--muted);font-weight:500}.pill.ok{color:var(--ok)}.pill.warn{color:var(--warn)}
-.tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:12px;min-width:240px}
+.tabs{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:4px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:12px;min-width:240px}
 @media (max-width:860px){.tabs{width:100%;position:sticky;top:8px;z-index:3}}
 .tabs button{border:0;background:none;color:var(--muted);padding:9px;border-radius:9px;font-weight:600}
-.tabs button.on{background:var(--accent);color:var(--accent-ink)}
+.tabs button.on{background:var(--accent);color:var(--accent-ink)}.tab-n{font-family:var(--mono);font-size:11px;opacity:.75}
+.shelf{display:grid;gap:18px}
+.spine{font:inherit;color:var(--ink);text-align:left;display:grid;gap:2px;width:100%;border:0;border-top:1px solid var(--line);background:none;padding:11px 0}.spine:first-of-type{border-top:0;padding-top:2px}.spine:hover .spine-t{color:var(--accent)}.spine-t{font-weight:600;font-size:15.5px;overflow-wrap:anywhere}
+.book{max-width:820px;width:100%;margin:0 auto;padding:22px clamp(16px,4vw,40px) 26px}
+.book-bar{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}.book-bar .link{padding:0}.book-bar.foot{margin-top:28px;padding-top:14px;border-top:1px solid var(--line)}
+.md{font-family:var(--font),"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;font-size:16.5px;line-height:1.85;overflow-wrap:anywhere;margin-top:14px}
+.md h1,.md h2,.md h3,.md h4,.md h5,.md h6{color:var(--ink);text-transform:none;letter-spacing:0;line-height:1.4;margin:1.6em 0 .5em;font-weight:700}
+.md h1{font-size:26px;margin-top:.4em}.md h2{font-size:21px;padding-bottom:6px;border-bottom:1px solid var(--line)}.md h3{font-size:17.5px;color:#cfc4f7}.md h4{font-size:16px}.md h5,.md h6{font-size:15px;color:var(--muted)}
+.md p{margin:.7em 0}.md ul,.md ol{margin:.6em 0;padding-left:1.6em}.md li{margin:.25em 0}.md li>ul,.md li>ol{margin:.2em 0}
+.md strong{color:#fff;font-weight:700}.md em{font-style:italic}.md del{color:var(--muted)}.md a{color:var(--accent)}.md .md-link{color:var(--accent);border-bottom:1px dotted}
+.md code{font-size:.86em;padding:1px 6px}.md pre{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow-x:auto;line-height:1.6}.md pre code{background:none;padding:0;font-size:13.5px;white-space:pre}
+.md blockquote{margin:.8em 0;padding:4px 16px;border-left:3px solid var(--accent);color:var(--muted)}
+.md hr{border:0;border-top:1px solid var(--line);margin:1.8em 0}
+.md-table{overflow-x:auto;margin:.9em 0}.md table{border-collapse:collapse;min-width:100%;font-size:15px;line-height:1.6}.md th,.md td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}.md th{background:var(--surface2);font-weight:700}
+button.tick{padding:0;background:none;cursor:pointer}button.tick:hover{background:#a184f233}li.ok button.tick{background:var(--ok)}
 .how{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.how li{display:flex;gap:10px;align-items:flex-start;font-size:13.5px;color:var(--muted);background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px}.how b{flex:none;width:22px;height:22px;border-radius:50%;background:var(--surface2);color:var(--accent);display:grid;place-items:center;font-family:var(--mono);font-size:12px}
 @media (max-width:860px){.how{grid-template-columns:1fr;gap:6px}.how li{padding:7px 10px;font-size:12.5px}}
 .why{color:var(--muted);font-size:13px;margin:0 0 12px}.talk .why{margin:10px 0 0}
@@ -319,9 +363,10 @@ ul.daily li{display:flex;gap:10px;align-items:flex-start;padding:6px 0}ul.daily 
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style></head><body><div class="wrap">
 <header class="top"><div><div class="eyebrow">WAR ROOM</div><h1>${esc(cfg.project)}</h1><div class="sub">${esc(now())}${live ? ' · live' : ' · snapshot'}</div><div class="pills">${pills}</div></div>
-<nav class="tabs"><button type="button" class="on" data-go="main">Main</button><button type="button" data-go="details">Details</button></nav></header>
+<nav class="tabs"><button type="button" class="on" data-go="main">Main</button>${showShelf ? `<button type="button" data-go="shelf">Shelf${shelf.length ? ` <span class="tab-n">${shelf.length}</span>` : ''}</button>` : ''}<button type="button" data-go="details">Details</button></nav></header>
 <ol class="how"><li><b>1</b>Tell the commander what you want, in any words.</li><li><b>2</b>It hands each job to the right team member and checks the work.</li><li><b>3</b>You only step in to answer a question or approve a risky step (push, deploy, money, deleting).</li></ol>
 <div class="pane on" id="main">${mainPane}</div>
+<div class="pane" id="shelf">${shelfPane}</div>
 <div class="pane" id="details">${details}</div>
 </div>
 <script>
@@ -329,7 +374,14 @@ const LIVE=${live ? 'true' : 'false'};
 const TOKEN=new URLSearchParams(location.search).get('t')||'';
 function go(id){document.querySelectorAll('.pane').forEach(p=>p.classList.toggle('on',p.id===id));document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.go===id));scrollTo(0,0);try{localStorage.setItem('wr-tab',id)}catch{}}
 document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>go(b.dataset.go));
-try{const t=localStorage.getItem('wr-tab');if(t)go(t)}catch{}
+try{const t=localStorage.getItem('wr-tab');if(t&&document.getElementById(t))go(t)}catch{}
+// The shelf: one book open at a time; the address keeps it, so a reload lands back on the same page.
+function openBook(id){const b=document.getElementById('book-'+id);if(!b)return;go('shelf');document.getElementById('shelfList').hidden=true;document.querySelectorAll('.book').forEach(x=>x.hidden=x!==b);history.replaceState(null,'',location.pathname+location.search+'#shelf/'+id);scrollTo(0,0)}
+function closeBook(){document.querySelectorAll('.book').forEach(x=>x.hidden=true);document.getElementById('shelfList').hidden=false;if(location.hash)history.replaceState(null,'',location.pathname+location.search);scrollTo(0,0)}
+document.querySelectorAll('[data-book]').forEach(b=>b.onclick=()=>openBook(b.dataset.book));
+document.querySelectorAll('[data-close-book]').forEach(b=>b.onclick=closeBook);
+document.querySelectorAll('.tabs [data-go]').forEach(b=>b.addEventListener('click',()=>{if(b.dataset.go!=='shelf')closeBook()}));
+if(location.hash.startsWith('#shelf/'))openBook(decodeURIComponent(location.hash.slice(7)));
 document.querySelectorAll('[data-fill]').forEach(b=>b.onclick=()=>{b.closest('.q').querySelector('textarea').value=b.dataset.fill});
 const shq=s=>"'"+s.replace(/'/g,"'\\\\''")+"'";
 async function post(path,body,out,fallback){
@@ -356,8 +408,10 @@ document.querySelectorAll('[data-approve]').forEach(b=>b.onclick=async()=>{const
     setTimeout(()=>{if(armed===b){armed=null;b.textContent='Approve';b.classList.remove('armed');out.textContent=''}},5000);return}
   armed=null;box.querySelectorAll('button').forEach(x=>x.disabled=true);
   if(await post('/api/approve',{id:b.dataset.approve,yes},out,'war-room approve --id '+b.dataset.approve+(yes?' --yes':' --no')))setTimeout(()=>location.reload(),900);else box.querySelectorAll('button').forEach(x=>x.disabled=false)});
-document.querySelectorAll('[data-goal]').forEach(b=>b.onclick=async()=>{const box=b.closest('.ap'),out=box.querySelector('.out');box.querySelectorAll('button').forEach(x=>x.disabled=true);
+document.querySelectorAll('[data-tick]').forEach(b=>b.onclick=async()=>{const out=document.getElementById('tickOut'),done=b.dataset.done!=='1';b.disabled=true;
+  if(await post('/api/today',{goalId:b.dataset.goal,index:Number(b.dataset.tick),text:b.dataset.text,done},out,'war-room tick --goal '+b.dataset.goal+' --item '+(Number(b.dataset.tick)+1)+(done?'':' --undo')))setTimeout(()=>location.reload(),600);else b.disabled=false});
+document.querySelectorAll('[data-goal]:not([data-tick])').forEach(b=>b.onclick=async()=>{const box=b.closest('.ap'),out=box.querySelector('.out');box.querySelectorAll('button').forEach(x=>x.disabled=true);
   if(await post('/api/goal',{goalId:b.dataset.goal,choice:b.dataset.choice},out,'war-room call decide_goal '+shq(JSON.stringify({agent:'commander',goalId:b.dataset.goal,choice:b.dataset.choice,founderWords:'chose on the page'}))))setTimeout(()=>location.reload(),900);else box.querySelectorAll('button').forEach(x=>x.disabled=false)});
-if(LIVE)setInterval(async()=>{try{const r=await fetch('/api/version',{headers:{'x-war-room-token':TOKEN}});const v=await r.text();if(window.__v&&v!==window.__v&&!armed&&!document.activeElement.matches('textarea'))location.reload();window.__v=v}catch{}},5000);
+if(LIVE)setInterval(async()=>{try{const r=await fetch('/api/version',{headers:{'x-war-room-token':TOKEN}});const v=await r.text();if(window.__v&&v!==window.__v&&!armed&&!document.activeElement.matches('textarea')&&!document.querySelector('.book:not([hidden])'))location.reload();window.__v=v}catch{}},5000);
 </script></body></html>`;
 }

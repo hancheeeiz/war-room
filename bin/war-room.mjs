@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
 import { resumeAfterApproval, wakeCommander, wakeMember } from '../server/agents.mjs';
 import { STARTER_RULES, starterRules } from '../server/starter-rules.mjs';
-import { autoRemember, brief, callTool, consumeApproval, requestApproval, resolveApproval, ruleInForce } from '../server/tools.mjs';
+import { autoRemember, brief, callTool, consumeApproval, requestApproval, resolveApproval, ruleInForce, tickToday } from '../server/tools.mjs';
 
 const [cmd, ...rest] = process.argv.slice(2);
 const flag = (name, dflt) => { const i = rest.indexOf(`--${name}`); return i >= 0 ? rest[i + 1] : dflt; };
@@ -19,7 +19,7 @@ const FOUNDER_YES = [
   // Switching the guard itself off is a founder decision too.
   [/\bclaude\s+(plugin|plugins|mcp)\s+(disable|uninstall|remove|rm)\b|\.claude\/(settings[^\s/]*\.json|plugins\/)|hooks\/hooks\.json/, 'switching off or changing the safety guard'],
   // Any shell command that touches .warroom or names the approvals file asks first (covers cd, cp, node -e …).
-  [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer|founder_answer|decide_goal|confirm-rules)\b|\bwar-room(\.mjs)?\b[^|;&\n]*\brules\s+--o(ff|n)\b|\.warroom\b|\bapprovals\.json\b|\.config\/war-room\b|\bWAR_ROOM_HOME\b/, 'approving, answering for the founder, or changing war-room files'],
+  [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer|founder_answer|decide_goal|confirm-rules|tick)\b|\bwar-room(\.mjs)?\b[^|;&\n]*\brules\s+--o(ff|n)\b|\.warroom\b|\bapprovals\.json\b|\.config\/war-room\b|\bWAR_ROOM_HOME\b/, 'approving, answering for the founder, or changing war-room files'],
   [/\b(firebase|vercel|netlify|fly|flyctl|wrangler|eas|amplify|gcloud|aws|heroku|render)\b[^|;&]*\b(deploy|publish|submit)\b|--prod\b|\bkubectl\s+(apply|delete|rollout|scale)\b|\bterraform\s+(apply|destroy)\b|\bdocker\s+push\b|\bsupabase\s+(db\s+push|functions\s+deploy)\b|\brailway\s+up\b/, 'deploy'],
   [/\b(npm|pnpm|yarn|bun)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b|\bpod\s+trunk\s+push\b|\bgh\s+release\s+(create|upload|edit)\b|\bgh\s+repo\s+(create|edit|rename|archive)\b|\bgh\s+pr\s+merge\b/, 'publishing'],
   // Connecting another agent changes that tool's own settings files.
@@ -102,7 +102,7 @@ async function serve(opts = {}) {
   let token = (opts.keepLink ?? rest.includes('--keep-link')) && fs.existsSync(keepFile) ? fs.readFileSync(keepFile, 'utf8').trim() : crypto.randomBytes(24).toString('base64url');
   if (lan) fs.writeFileSync(keepFile, token, { mode: 0o600 });
   const tokenOk = (got) => !lan || (typeof got === 'string' && got.length === token.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(token)));
-  const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals', 'runs', 'debates', 'team'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
+  const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals', 'runs', 'debates', 'team', 'shelf'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
     + (fs.existsSync(`${store.root}/log.jsonl`) ? fs.statSync(`${store.root}/log.jsonl`).mtimeMs : 0);
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
   const actions = {
@@ -142,6 +142,14 @@ async function serve(opts = {}) {
         const ap = resolveApproval(store, { id: String(b.id), yes: b.yes === true, by: 'founder (war-room page)' });
         callTool(store, 'post_message', { agent: 'founder', to: ap.agent, kind: 'info', text: `${ap.id} ${ap.status} by the founder: ${ap.action}` });
         resumeAfterApproval(store, ap);
+        return { text: 'ok' };
+      } catch (e) { return { error: e.message }; }
+    },
+    // The founder ticks one of today's goals that has no task behind it.
+    '/api/today': (b) => {
+      if (!Number.isInteger(b.index) || b.index < 0) return { error: 'Bad item.' };
+      try {
+        tickToday(store, { goalId: String(b.goalId), index: b.index, text: b.text === undefined ? undefined : String(b.text), done: b.done !== false });
         return { text: 'ok' };
       } catch (e) { return { error: e.message }; }
     },
@@ -401,6 +409,17 @@ switch (cmd) {
     } catch (e) { console.error(e.message); process.exitCode = 1; }
     break;
   }
+  case 'tick': {
+    // The founder ticks today's goal number N (as shown on the page) from the terminal: war-room tick --item 2 [--undo]
+    if (!store.exists()) { console.log('No war room here.'); break; }
+    const goals = store.read('goals').filter((g) => g.status !== 'dropped');
+    const goalId = flag('goal') || (goals.find((g) => g.status === 'active') || goals[0])?.id;
+    try {
+      const it = tickToday(store, { goalId, index: Number(flag('item')) - 1, done: !rest.includes('--undo') });
+      console.log(`${it.done ? '[x]' : '[ ]'} ${it.text}`);
+    } catch (e) { console.error(e.message); process.exitCode = 1; }
+    break;
+  }
   case 'answer': {
     // The founder answers a queued question from the terminal (or a phone bridge calls this): instant, no polling.
     const out = callTool(store, 'founder_answer', { agent: store.config().commander, questionId: flag('question'), founderWords: flag('text') });
@@ -457,5 +476,6 @@ switch (cmd) {
   connect codex|gemini|cursor [--yes]   join another agent to the war room
   rules [--off sN --yes | --on sN --yes]   starter rules and your rules
   approve --id A --yes|--no · answer --question ID --text "..." · confirm-rules [--yes]
+  tick --item N [--goal G] [--undo]   tick today's goal N yourself (one with no task behind it)
   init · serve [--lan] · watch · dashboard · brief [--agent N] · call TOOL [JSON] · check-stale`);
 }

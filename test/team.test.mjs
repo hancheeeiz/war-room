@@ -31,7 +31,7 @@ const call = (dir, tool, args) => {
 
 function activeGoal(dir) {
   call(dir, 'propose_goal', { agent: 'commander', title: 'Ship the site', founderWords: 'ship it' });
-  call(dir, 'judge_goal', { agent: 'commander', goalId: 'g1', fit: 'core', cost: 'a day', risks: 'none', strongerVersion: 'none', recommendation: 'keep', reason: 'ok' });
+  call(dir, 'judge_goal', { agent: 'commander', goalId: 'g1', fit: 'core', cost: 'a day', risks: 'none', strongerVersion: 'none', learn: [], recommendation: 'keep', reason: 'ok' });
   call(dir, 'decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'yes' });
   call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Build', win: 'live', checks: ['page builds', 'page reviewed'] }] });
 }

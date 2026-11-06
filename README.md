@@ -20,12 +20,13 @@ Everything else (starting helper chats, the page, connecting other agents) the c
 ## What it does
 
 - **Remembers.** Every preference, decision, idea and to-do you mention is stored with its date. It reminds you of past decisions and never asks what it already knows. It never stores passwords, keys or card numbers.
-- **Judges before it plans.** A new idea gets checked for fit, cost, risk and clashes with earlier decisions, and you get a stronger version to choose from: keep / improved / later / drop.
-- **Plans with honest progress.** Milestones with checks, a few goals per day. Bars move only when the commander has re-checked the work itself.
+- **Judges before it plans.** A new idea gets checked for fit, cost, risk and clashes with earlier decisions, and you get a stronger version to choose from: keep / improved / later / drop. It also decides whether the goal needs you to learn anything first.
+- **Plans with honest progress.** As many milestones as the goal really needs (one for a small job, more for a big one; no set number), each with checks, a few goals per day. Bars move only when the commander has re-checked the work itself.
 - **Runs a team.** The commander hires a few named roles for your goal and the page draws them as a chart: you → commander → each member, with what each is doing right now. Tap a member to talk to it directly. Members can come from different companies (a Gemini reviewer checking Claude's work catches more).
 - **Works step by step when it must.** A job can wait for another ("review after build"); the next member starts by itself once the step before is checked.
 - **Starts helper chats itself.** Each helper gets only its task, its files and the rules that apply, works in the background, and reports back. One writer per file. If a helper stops at something that needs your yes, it starts again by itself once you approve.
 - **Lets different AI companies argue.** For a hard question it puts the same question to Claude, Codex, Gemini or Cursor (whichever you have). Each answers blind, then reads the others and argues; it may change its mind only by naming the argument that changed it. You see every answer side by side. Agents from one company share blind spots, so the page says so when only one company took part.
+- **Keeps a shelf of documents to reread.** Notes, laws and decision write-ups too long for one memory sentence go on a shelf on the page, shown as a readable page straight from the project file.
 - **Asks before anything risky.** Pushing code, deploying, publishing, deleting data, spending money, using keys, sending messages for you: each needs your yes for that exact action, once.
 - **Starts with good rules.** Nine built-in rules (below), and you can add your own.
 
@@ -83,9 +84,26 @@ war-room up --phone      # also prints a private link for your phone on the same
 war-room dashboard       # or write a static .warroom/dashboard.html
 ```
 
-**Main** tab: a three-line "how this works", the one box to tell the commander anything (its questions sit above the box; tap one to answer, the suggested answer is filled in), your team as a chart with each member's live state, the main goal's progress bar and deadline, today's goals and the 5 most recent events. Approvals appear at the top only when something waits on you. Sending from the box starts a background commander to route your words (turn off with `"autoCommander": false` in `.warroom/config.json`); a message to one member starts that member. **Details** tab: every chat and what it is doing, every goal with its checks, all tasks, the memory by kind, open messages and the full log, each list folded after 10 rows.
+**Main** tab: a three-line "how this works", the one box to tell the commander anything (its questions sit above the box; tap one to answer, the suggested answer is filled in), your team as a chart with each member's live state, the main goal's progress bar and deadline, today's goals and the 5 most recent events. A daily goal linked to a task ticks itself once the commander verifies that task; one with no task behind it (something you do yourself) has a box you tap to tick it (or `war-room tick --item 2`, `--undo` to untick). **Shelf** tab: the documents you keep to reread (see below). Approvals appear at the top only when something waits on you. Sending from the box starts a background commander to route your words (turn off with `"autoCommander": false` in `.warroom/config.json`); a message to one member starts that member. **Details** tab: every chat and what it is doing, every goal with its checks, all tasks, the memory by kind, open messages and the full log, each list folded after 10 rows.
 
 Under `serve`, answers and thoughts save straight into the war room and the page refreshes itself when anything changes. The static file shows a copy-and-run command instead.
+
+## The shelf
+
+Memory holds one plain sentence per item. For anything longer you want to reread — a learning note, your project's laws, a decision write-up — there is a shelf. Ask the commander ("put docs/notes/01-event-sourcing.md on the shelf"), or run it yourself from the project folder:
+
+```bash
+war-room call shelve '{"agent":"commander","path":"docs/notes/01-event-sourcing.md","category":"Learning"}'
+war-room call shelve '{"agent":"commander","path":"docs/notes/01-event-sourcing.md","remove":true}'   # take it off
+```
+
+**Learning depends on the goal.** When the commander judges a goal it lists what you need to learn for it, or nothing. Each topic becomes one short note on the shelf, under "To learn for: <goal>", marked *Note not written yet* until the commander writes it. A goal that needs no learning adds nothing, and the **Shelf** tab only shows when something is on it.
+
+Then open the page, tap **Shelf**, and tap a title: the note opens as a readable page with headings, tables, lists, bold, code blocks and any language (Chinese included). **← Back to the shelf** returns to the list; the page address keeps the open note, and the page does not refresh itself while you read.
+
+- **No copy.** `.warroom/shelf.json` keeps only the title, the file's path, the date it was added and its category. The text is read from the file each time, so the page always shows the file as it is now.
+- **Defaults.** The title is the file's first heading and the category is the name of its folder, unless you pass `title` or `category`.
+- **Only this project.** Only `.md` files inside the project folder are accepted; paths with `..`, absolute paths elsewhere and links pointing outside are refused, and the page checks every path again before reading, so a `shelf.json` copied in from elsewhere cannot show other files. Nothing on the page is loaded from other sites, and HTML in a note is shown as text, never run.
 
 ## Approve from your phone
 
@@ -136,7 +154,7 @@ It is recorded as a decision at once and the question closes.
 | `war_room_status` | everyone | Progress bars, today's goals, each agent's task, last 10 events |
 | `remember` / `recall` | everyone | Long-term memory with conflict check |
 | `ask_founder` / `founder_answer` | anyone / commander | Questions that memory cannot answer |
-| `propose_goal` → `judge_goal` → `decide_goal` → `set_plan` → `set_today` | commander | Goal intake, judging, founder choice, plan |
+| `propose_goal` → `judge_goal` → `decide_goal` → `set_plan` → `set_today` | commander | Goal intake, judging, founder choice, plan (re-planning keeps verified checks and renumbers ids by place) |
 | `create_task` / `verify_task` | commander | Hand out and check work |
 | `get_task_packet` / `report_done` | workers | Do one packet, report evidence |
 | `post_message` / `read_messages` | everyone | Requests, contracts, handoffs between agents |
@@ -144,12 +162,13 @@ It is recorded as a decision at once and the question closes.
 | `start_worker` | commander | Start a helper chat in the background (Claude, Codex, Gemini or Cursor) |
 | `start_debate` / `debate_result` | commander / everyone | Put one question to several agents; blind answers, then they argue |
 | `request_approval` / `check_approval` | everyone | Ask the founder for a yes; check the answer (no tool can approve) |
+| `shelve` | commander | Put a Markdown file from this project on the founder's shelf to reread on the page, or take it off (`remove`) |
 
 Agent names are self-declared. The commander-only checks keep roles clear between cooperating chats; they are not a security boundary.
 
 ## Data
 
-Plain JSON in `<project>/.warroom/`: `memory.json`, `goals.json`, `tasks.json`, `team.json`, `messages.json`, `runs.json`, `debates.json`, `log.jsonl`. A file lock keeps several agents from overwriting each other. It has no dependencies; needs Node 18+.
+Plain JSON in `<project>/.warroom/`: `memory.json`, `goals.json`, `tasks.json`, `team.json`, `messages.json`, `runs.json`, `debates.json`, `shelf.json` (pointers only), `log.jsonl`. A file lock keeps several agents from overwriting each other. It has no dependencies; needs Node 18+.
 
 ## Security
 

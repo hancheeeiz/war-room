@@ -1,5 +1,7 @@
 // War room tools. The MCP server and the CLI both call these, so every agent sees the same rules.
+import path from 'node:path';
 import { createDebate, launchDebate, runStatus, startWorker, stoppedWorkers } from './agents.mjs';
+import { firstHeading, readShelfItem, resolveShelfPath } from './shelf.mjs';
 import { starterRules } from './starter-rules.mjs';
 import { MEMORY_KINDS, nextId, now, overlap, sameTopic, sign, verify, words } from './store.mjs';
 
@@ -129,6 +131,12 @@ function progress(goal, tasks) {
   };
 }
 
+// Topics a goal's verdict says the founder must learn, minus those that already have a note on the shelf for it.
+function learningDue(store, goal) {
+  const notes = store.read('shelf').filter((b) => b.goalId === goal.id);
+  return (goal.verdict?.learn || []).filter((topic) => !notes.some((b) => b.topic === topic));
+}
+
 function relevantMemory(memory, text, limit, anyKind = false) {
   return memory
     .filter((m) => m.status === 'active' && (anyKind || !['rule', 'never', 'question'].includes(m.kind)))
@@ -164,6 +172,8 @@ export function brief(store, agent) {
   if (agent === cfg.commander) {
     const active = goals.filter((g) => !['done', 'dropped'].includes(g.status));
     if (active.length) out.push('', '## Goals', ...active.map((g) => { const p = progress(g, tasks); return `- ${g.id} [${g.status}] ${g.title} — ${p.percent}% (${p.verifiedChecks} checks verified)`; }));
+    const learning = active.map((g) => [g, learningDue(store, g)]).filter(([g, due]) => due.length && ['approved', 'active'].includes(g.status));
+    if (learning.length) out.push('', '## Learning notes still to write (one short note each, then shelve it with goalId and topic)', ...learning.map(([g, due]) => `- ${g.id}: ${due.join('; ')}`));
     if (team.length) out.push('', '## Your team (route each piece of work to the right role; hire adds one)', ...team.map((m) => `- ${m.name}: ${m.role}${m.does ? ` — ${m.does}` : ''} (${m.use || 'claude'}${m.model ? ` ${m.model}` : ''})`));
     else out.push('', '## Your team', 'No team yet. Hire the roles this goal needs with the hire tool (e.g. designer, backend, reviewer), then hand each its work.');
     const waiting = tasks.filter((t) => t.status === 'reported');
@@ -386,10 +396,11 @@ export const TOOLS = [
         strongerVersion: str('The improved version you would build instead, or "none".'),
         founderMayNotSee: strList('Blind spots on the founder side.'),
         aiMayNotSee: strList('Blind spots on the AI side.'),
+        learn: strList('What the founder must learn to do or judge this goal well, one short topic each (e.g. "how App Store review works"). An empty list [] when the goal needs no learning: then it gets no notes on the shelf.'),
         recommendation: { type: 'string', enum: ['keep', 'improve', 'later', 'drop'] },
         reason: str('One plain sentence.'),
       },
-      required: ['agent', 'goalId', 'fit', 'cost', 'risks', 'strongerVersion', 'recommendation', 'reason'],
+      required: ['agent', 'goalId', 'fit', 'cost', 'risks', 'strongerVersion', 'learn', 'recommendation', 'reason'],
     },
     run: (store, a) => {
       needCommander(store, a.agent);
@@ -397,6 +408,7 @@ export const TOOLS = [
         const g = goals.find((x) => x.id === a.goalId);
         if (!g) throw new Refused(`No goal ${a.goalId}.`);
         const { agent, goalId, ...verdict } = a;
+        verdict.learn = (a.learn || []).map((x) => x.trim()).filter(Boolean);
         g.verdict = { ...verdict, date: now() };
         g.status = 'judged';
         store.log({ agent, event: 'judge_goal', id: g.id, recommendation: a.recommendation });
@@ -428,7 +440,7 @@ export const TOOLS = [
   },
   {
     name: 'set_plan',
-    description: 'Commander only: set milestones for an approved goal. Each milestone has a win condition and checks; progress counts only verified checks.',
+    description: 'Commander only: set milestones for an approved goal. Use as many milestones as the goal really needs (one for a small job, more for a big one); there is no set number. Each milestone has a win condition and at least one check; progress counts only verified checks.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -439,32 +451,59 @@ export const TOOLS = [
     },
     run: (store, a) => {
       needCommander(store, a.agent);
-      return store.update('goals', (goals) => {
+      const out = store.update('goals', (goals) => {
         const g = goals.find((x) => x.id === a.goalId);
         if (!g) throw new Refused(`No goal ${a.goalId}.`);
         if (!['approved', 'active'].includes(g.status)) throw new Refused(`Goal is "${g.status}": the founder must approve it (decide_goal) before planning.`);
-        const kept = new Map((g.milestones || []).flatMap((m) => m.checks).map((c) => [c.text, c]));
+        if (!a.milestones.length) throw new Refused('A plan needs at least one milestone.');
+        const empty = a.milestones.find((m) => !m.checks.length);
+        if (empty) throw new Refused(`Milestone "${empty.title}" has no check. Give it at least one thing you can re-run or look at.`);
+        // A check found again by its text keeps only its verified state and evidence; its id always follows its
+        // new place, so a reordered plan never ends up with two g1.m1.c3 or an m3 check called g1.m2.*.
+        const old = (g.milestones || []).flatMap((m) => m.checks || []);
+        const kept = new Map();
+        for (const c of old) if (!kept.has(c.text)) kept.set(c.text, c);
+        const moved = new Map();
         g.milestones = a.milestones.map((m, i) => ({
           id: `${g.id}.m${i + 1}`, title: m.title, win: m.win,
-          checks: m.checks.map((text, j) => kept.get(text) || { id: `${g.id}.m${i + 1}.c${j + 1}`, text, verified: false }),
+          checks: m.checks.map((text, j) => {
+            const id = `${g.id}.m${i + 1}.c${j + 1}`;
+            const was = kept.get(text);
+            if (was && !moved.has(was.id)) moved.set(was.id, id);
+            return was?.verified ? { id, text, verified: true, evidence: was.evidence, verifiedAt: was.verifiedAt } : { id, text, verified: false };
+          }),
         }));
         g.status = 'active';
         store.log({ agent: a.agent, event: 'set_plan', id: g.id, milestones: g.milestones.length });
-        return g;
+        return { g, moved, dropped: new Set(old.map((c) => c.id).filter((id) => !moved.has(id))) };
       });
+      // Tasks point at checks by id: follow each check to its new id, and unlink tasks whose check left the plan
+      // (otherwise verifying them would tick whichever check now has the old id).
+      store.update('tasks', (tasks) => {
+        for (const t of tasks) {
+          if (t.goalId !== a.goalId || !t.checkId) continue;
+          if (out.moved.has(t.checkId)) t.checkId = out.moved.get(t.checkId);
+          else if (out.dropped.has(t.checkId)) { t.droppedCheck = t.checkId; delete t.checkId; }
+        }
+      });
+      const due = learningDue(store, out.g);
+      return due.length ? { ...out.g, next: `This goal needs learning. For each topic write one short plain note in the project and shelve it with goalId "${out.g.id}": ${due.join('; ')}.` } : out.g;
     },
   },
   {
     name: 'set_today',
-    description: 'Commander only: set today\'s goals for a goal (short list, each optionally linked to a task).',
+    description: 'Commander only: set today\'s goals for a goal (short list, each optionally linked to a task). A goal linked to a task ticks itself when that task is verified; one without a task the founder ticks on the page.',
     inputSchema: { type: 'object', properties: { agent: AGENT, goalId: str('Goal id.'), items: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, taskId: { type: 'string' } }, required: ['text'] } } }, required: ['agent', 'goalId', 'items'] },
     run: (store, a) => {
       needCommander(store, a.agent);
       return store.update('goals', (goals) => {
         const g = goals.find((x) => x.id === a.goalId);
         if (!g) throw new Refused(`No goal ${a.goalId}.`);
-        (g.daily ||= {})[today()] = a.items;
-        return { date: today(), items: a.items };
+        // A goal the founder already ticked on the page stays ticked when the commander sets the list again.
+        const before = (g.daily ||= {})[today()] || [];
+        const items = a.items.map((it) => (!it.taskId && before.some((b) => b.done && !b.taskId && b.text === it.text) ? { ...it, done: true } : it));
+        g.daily[today()] = items;
+        return { date: today(), items };
       });
     },
   },
@@ -693,6 +732,71 @@ TOOLS.push(
     },
   },
 );
+
+// The founder ticks a daily goal that has no task behind it (a task-linked one ticks itself once verified).
+// Page and terminal only; the text must still match, in case the commander changed the list meanwhile.
+export function tickToday(store, { goalId, index, text, done = true }) {
+  return store.update('goals', (goals) => {
+    const g = goals.find((x) => x.id === goalId);
+    const it = g?.daily?.[today()]?.[index];
+    if (!it || (text !== undefined && it.text !== text)) throw new Refused('Today\'s list changed; reload the page.');
+    if (it.taskId) throw new Refused(`This one ticks itself when task ${it.taskId} is verified.`);
+    if (done) it.done = true; else delete it.done;
+    store.log({ agent: 'founder', event: done ? 'today_done' : 'today_undone', id: goalId, text: it.text });
+    return it;
+  });
+}
+
+// ── The shelf: documents the founder rereads on the page ───────────
+TOOLS.push({
+  name: 'shelve',
+  description: 'Commander only: put a Markdown file from this project on the founder\'s shelf, or take it off (remove=true), so the founder can reread it on the war-room page (Shelf tab). The shelf keeps a pointer, not a copy: the page always shows the file as it is now. Only .md files inside this project folder. Use it for learning notes, laws, decisions — anything too long for one memory sentence.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      agent: AGENT,
+      path: str('Path of the file, relative to the project folder, e.g. "docs/learning/01-event-sourcing.md".'),
+      title: str('Title on the shelf. Default: the file\'s first heading.'),
+      category: str('Shelf section in the founder\'s words, e.g. "學習", "法則", "決定". Default: the name of the file\'s folder.'),
+      goalId: str('The goal this note is for (optional).'),
+      topic: str('With goalId: the learning topic from that goal\'s judge_goal "learn" list that this note covers, word for word.'),
+      remove: { type: 'boolean', description: 'Take it off the shelf. The file itself is never touched.' },
+    },
+    required: ['agent', 'path'],
+  },
+  run: (store, a) => {
+    needCommander(store, a.agent);
+    if (a.remove) {
+      return store.update('shelf', (shelf) => {
+        const want = path.posix.normalize(a.path.replace(/\\/g, '/')).replace(/^\.\//, '');
+        const i = shelf.findIndex((b) => b.id === a.path || b.path === want || b.path === resolveShelfPath(store, a.path).rel);
+        if (i < 0) throw new Refused(`${a.path} is not on the shelf.`);
+        const [b] = shelf.splice(i, 1);
+        store.log({ agent: a.agent, event: 'unshelved', id: b.id, text: b.title });
+        return { removed: b, note: 'Only the shelf entry is gone; the file stays where it is.' };
+      });
+    }
+    const r = resolveShelfPath(store, a.path);
+    if (r.error) throw new Refused(r.error);
+    if ((a.title || '').length > 200 || (a.category || '').length > 40) throw new Refused('Keep the title under 200 and the category under 40 characters.');
+    if (a.topic && !a.goalId) throw new Refused('A topic belongs to a goal: pass goalId too.');
+    if (a.goalId) {
+      const g = store.read('goals').find((x) => x.id === a.goalId);
+      if (!g) throw new Refused(`No goal ${a.goalId}.`);
+      if (a.topic && !(g.verdict?.learn || []).includes(a.topic)) throw new Refused(`"${a.topic}" is not on ${g.id}'s learning list: ${(g.verdict?.learn || []).join('; ') || 'it has none'}.`);
+    }
+    const title = a.title?.trim() || firstHeading(readShelfItem(store, { path: r.rel }).text) || path.posix.basename(r.rel).replace(/\.(md|markdown)$/i, '');
+    const folder = path.posix.basename(path.posix.dirname(r.rel));
+    const category = a.category?.trim() || (folder === '.' ? 'Notes' : folder);
+    return store.update('shelf', (shelf) => {
+      const had = shelf.find((b) => b.path === r.rel);
+      const b = Object.assign(had || { id: nextId(shelf, 'b'), path: r.rel, added: now(), by: a.agent }, { title, category }, a.goalId ? { goalId: a.goalId } : {}, a.topic ? { topic: a.topic } : {});
+      if (!had) shelf.push(b);
+      store.log({ agent: a.agent, event: had ? 'shelf_updated' : 'shelved', id: b.id, text: title });
+      return { shelved: b, next: 'The founder can read it on the war-room page, Shelf tab.' };
+    });
+  },
+});
 
 // Enforce each tool's schema on the server: clients are not trusted to have checked types, enums or required fields.
 function checkArgs(schema, args) {

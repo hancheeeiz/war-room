@@ -82,9 +82,9 @@ test('goal flow: intake, judge, founder choice, plan, task, verify moves the bar
   const g = await c.call('propose_goal', { agent: 'commander', title: 'Add dark mode', founderWords: 'i want dark mode' });
   assert.deepEqual(g.json.askFounderFirst.sort(), ['byWhen', 'doneLooksLike', 'forWhom', 'mustNever', 'what']);
   assert.match((await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [] })).error, /must approve/);
-  assert.match((await c.call('judge_goal', { agent: 'worker', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'x', recommendation: 'keep', reason: 'x' })).error, /Only the commander/);
+  assert.match((await c.call('judge_goal', { agent: 'worker', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'x', learn: [], recommendation: 'keep', reason: 'x' })).error, /Only the commander/);
   assert.match((await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' })).error, /Judge the goal/);
-  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'users asked', cost: '1 day', risks: 'contrast bugs', strongerVersion: 'Dark mode that follows the system setting', founderMayNotSee: ['images need dark variants'], aiMayNotSee: ['brand colours may be fixed'], recommendation: 'improve', reason: 'small change, better default' });
+  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'users asked', cost: '1 day', risks: 'contrast bugs', strongerVersion: 'Dark mode that follows the system setting', founderMayNotSee: ['images need dark variants'], aiMayNotSee: ['brand colours may be fixed'], learn: [], recommendation: 'improve', reason: 'small change, better default' });
   const d = await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'improve', founderWords: 'yes the better one' });
   assert.equal(d.json.improved, 'Dark mode that follows the system setting');
   assert.doesNotMatch(d.json.title, /follows the system/, 'the short goal title stays');
@@ -117,7 +117,7 @@ test('gap fixes: proactive memory, stale tasks, reassign, budget warning', async
   await c.call('remember', { agent: 'commander', kind: 'decision', text: 'The landing page stays violet and dark, no light theme' });
   const g = await c.call('propose_goal', { agent: 'commander', title: 'Light theme for the landing page', founderWords: 'add a light landing page theme', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
   assert.ok(g.json.relatedMemory.some((m) => m.text.includes('no light theme')), 'intake must surface the forgotten decision');
-  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', recommendation: 'keep', reason: 'x' });
+  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', learn: [], recommendation: 'keep', reason: 'x' });
   await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' });
   await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Theme', win: 'theme ships', checks: ['tokens exist'] }] });
   // Task creation surfaces matching memory the commander forgot to attach.
@@ -149,7 +149,7 @@ test('watch pieces: hourly stale alert is deduped; founder answer lands instantl
   const c = connect(dir);
   tc.after(() => c.close());
   await c.call('propose_goal', { agent: 'commander', title: 'G', founderWords: 'g', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
-  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', recommendation: 'keep', reason: 'x' });
+  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', learn: [], recommendation: 'keep', reason: 'x' });
   await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' });
   await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'M', win: 'w', checks: ['c'] }] });
   await c.call('create_task', { agent: 'commander', goalId: 'g1', title: 'T', assignTo: 'w1', doneCheck: 'x' });
@@ -215,7 +215,7 @@ test('memory map auto-stores problems and ideas', async (tc) => {
   const c = connect(dir);
   tc.after(() => c.close());
   await c.call('propose_goal', { agent: 'commander', title: 'Offline mode', founderWords: 'works on the train', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
-  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', recommendation: 'keep', reason: 'x' });
+  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', learn: [], recommendation: 'keep', reason: 'x' });
   await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' });
   await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Cache', win: 'w', checks: ['c'] }] });
   await c.call('create_task', { agent: 'commander', goalId: 'g1', title: 'Cache layer', assignTo: 'w1', doneCheck: 'airplane mode test' });
@@ -273,7 +273,7 @@ test('approvals: page buttons, phone token, guard uses an exact approval once', 
   assert.equal(guard('firebase deploy --only hosting').permissionDecision, 'deny', 'an approval is used once');
   // Goal decision from the page.
   await c.call('propose_goal', { agent: 'commander', title: 'Widgets', founderWords: 'w', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
-  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', recommendation: 'later', reason: 'after launch' });
+  await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', learn: [], recommendation: 'later', reason: 'after launch' });
   const g = await fetch(`http://127.0.0.1:${port}/api/goal`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-war-room-token': token }, body: JSON.stringify({ goalId: 'g1', choice: 'later' }) });
   assert.equal(g.status, 200);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.warroom/goals.json'), 'utf8'))[0].status, 'later');

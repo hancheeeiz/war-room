@@ -4,8 +4,11 @@ import readline from 'node:readline';
 import { Store } from './store.mjs';
 import { TOOLS, callTool } from './tools.mjs';
 
-const VERSION = '0.3.3';
+const VERSION = '0.4.0';
 const store = new Store();
+// One chat, one name: this server runs inside one chat, so the first agent name it acts as (or WAR_ROOM_AGENT, set
+// for worker chats the war room starts) is that chat's name for good. A commander chat cannot report as "mobile".
+let me = process.env.WAR_ROOM_AGENT || null;
 
 const send = (msg) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...msg })}\n`);
 
@@ -24,7 +27,10 @@ async function handle(req) {
     case 'tools/list':
       return send({ id, result: { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
     case 'tools/call': {
+      const who = params.arguments?.agent;
+      if (who && me && who !== me) return send({ id, result: { content: [{ type: 'text', text: `This chat is "${me}" in the war room and cannot act as "${who}". Each role works in its own chat: the commander starts it with start_worker.` }], isError: true } });
       const out = await callTool(store, params.name, params.arguments);
+      if (who && !me && !out.error && store.exists()) me = who;
       return send({ id, result: out.error ? { content: [{ type: 'text', text: out.error }], isError: true } : { content: [{ type: 'text', text: out.text }] } });
     }
     default:

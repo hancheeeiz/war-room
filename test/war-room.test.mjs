@@ -17,8 +17,8 @@ function tmpProject() {
   return dir;
 }
 
-// Minimal MCP client over stdio.
-function connect(cwd) {
+// Minimal MCP client over stdio: one server process per server, as each chat runs its own.
+function server(cwd) {
   const proc = spawn('node', [path.join(ROOT, 'server/index.mjs')], { cwd, env: { ...process.env, WAR_ROOM_DIR: cwd } });
   let buf = '';
   let id = 0;
@@ -39,6 +39,13 @@ function connect(cwd) {
     return { error: r.result.isError ? text : null, text, json: (() => { try { return JSON.parse(text); } catch { return null; } })() };
   };
   return { rpc, call, close: () => proc.kill() };
+}
+
+// A war room seen by several chats: each agent name gets its own chat (server process), as in real use.
+function connect(cwd) {
+  const chats = new Map();
+  const chat = (name = '_') => { if (!chats.has(name)) chats.set(name, server(cwd)); return chats.get(name); };
+  return { rpc: (...x) => chat().rpc(...x), call: (name, args = {}) => chat(args.agent).call(name, args), chat, close: () => { for (const c of chats.values()) c.close(); } };
 }
 
 test('MCP handshake lists the tools', async () => {
@@ -88,7 +95,7 @@ test('goal flow: intake, judge, founder choice, plan, task, verify moves the bar
   const d = await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'improve', founderWords: 'yes the better one' });
   assert.equal(d.json.improved, 'Dark mode that follows the system setting');
   assert.doesNotMatch(d.json.title, /follows the system/, 'the short goal title stays');
-  await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Tokens', win: 'all colours are tokens', checks: ['no hex colours in components', 'dark tokens defined'] }] });
+  await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Tokens', win: 'all colours are tokens', due: '2099-12-31', checks: ['no hex colours in components', 'dark tokens defined'] }] });
   const t1 = await c.call('create_task', { agent: 'commander', goalId: 'g1', checkId: 'g1.m1.c2', title: 'Define dark tokens', assignTo: 'frontend', files: ['src/styles/'], doneCheck: 'grep shows dark tokens', model: 'cheap' });
   assert.equal(t1.json.task.id, 't1');
   assert.equal(t1.json.task.model, 'cheap');
@@ -119,7 +126,7 @@ test('gap fixes: proactive memory, stale tasks, reassign, budget warning', async
   assert.ok(g.json.relatedMemory.some((m) => m.text.includes('no light theme')), 'intake must surface the forgotten decision');
   await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', learn: [], recommendation: 'keep', reason: 'x' });
   await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' });
-  await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Theme', win: 'theme ships', checks: ['tokens exist'] }] });
+  await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Theme', win: 'theme ships', due: '2099-12-31', checks: ['tokens exist'] }] });
   // Task creation surfaces matching memory the commander forgot to attach.
   const t = await c.call('create_task', { agent: 'commander', goalId: 'g1', title: 'Build the light landing theme', assignTo: 'frontend', files: ['src/a.css'], doneCheck: 'landing theme toggles' });
   assert.ok(t.json.missedMemory.some((m) => m.text.includes('no light theme')));
@@ -151,7 +158,7 @@ test('watch pieces: hourly stale alert is deduped; founder answer lands instantl
   await c.call('propose_goal', { agent: 'commander', title: 'G', founderWords: 'g', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
   await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', learn: [], recommendation: 'keep', reason: 'x' });
   await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' });
-  await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'M', win: 'w', checks: ['c'] }] });
+  await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'M', win: 'w', due: '2099-12-31', checks: ['c'] }] });
   await c.call('create_task', { agent: 'commander', goalId: 'g1', title: 'T', assignTo: 'w1', doneCheck: 'x' });
   await c.call('get_task_packet', { agent: 'w1' });
   const tasksFile = path.join(dir, '.warroom/tasks.json');
@@ -217,7 +224,7 @@ test('memory map auto-stores problems and ideas', async (tc) => {
   await c.call('propose_goal', { agent: 'commander', title: 'Offline mode', founderWords: 'works on the train', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
   await c.call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', learn: [], recommendation: 'keep', reason: 'x' });
   await c.call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' });
-  await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Cache', win: 'w', checks: ['c'] }] });
+  await c.call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Cache', win: 'w', due: '2099-12-31', checks: ['c'] }] });
   await c.call('create_task', { agent: 'commander', goalId: 'g1', title: 'Cache layer', assignTo: 'w1', doneCheck: 'airplane mode test' });
   await c.call('get_task_packet', { agent: 'w1' });
   await c.call('report_done', { agent: 'w1', taskId: 't1', summary: 'cache added', evidence: 'unit test', notVerified: 'no real device to test airplane mode' });
@@ -434,4 +441,13 @@ test('to-dos the founder mentions are stored straight away and shown on the page
   const html = fs.readFileSync(path.join(dir, '.warroom/dashboard.html'), 'utf8');
   assert.match(html, /To do/);
   assert.match(html, /launch email to the beta list/);
+});
+
+test('one chat, one name: a chat that acted as the commander cannot report as a worker', async () => {
+  const dir = tmpProject();
+  const c = server(dir);
+  await c.call('war_room_brief', { agent: 'commander' });
+  const r = await c.call('report_done', { agent: 'mobile', taskId: 't1', summary: 's', evidence: 'e' });
+  assert.match(r.error, /This chat is "commander".*cannot act as "mobile"/);
+  c.close();
 });

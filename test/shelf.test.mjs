@@ -147,7 +147,7 @@ test('set_plan renumbers checks by their new place and keeps only verified state
   call(dir, 'propose_goal', { agent: 'commander', title: 'G', founderWords: 'g', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
   call(dir, 'judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', learn: [], recommendation: 'keep', reason: 'x' });
   call(dir, 'decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' });
-  call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', checks: ['a1', 'a2'] }, { title: 'B', win: 'w', checks: ['b1', 'b2'] }] });
+  call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', due: '2099-12-31', checks: ['a1', 'a2'] }, { title: 'B', win: 'w', due: '2099-12-31', checks: ['b1', 'b2'] }] });
   call(dir, 'create_task', { agent: 'commander', goalId: 'g1', checkId: 'g1.m1.c2', title: 'do a2', assignTo: 'w1', doneCheck: 'x' });
   call(dir, 'create_task', { agent: 'commander', goalId: 'g1', checkId: 'g1.m2.c1', title: 'do b1', assignTo: 'w2', doneCheck: 'x' });
   call(dir, 'create_task', { agent: 'commander', goalId: 'g1', checkId: 'g1.m1.c1', title: 'do a1', assignTo: 'w3', doneCheck: 'x' });
@@ -155,7 +155,7 @@ test('set_plan renumbers checks by their new place and keeps only verified state
   call(dir, 'report_done', { agent: 'w1', taskId: 't1', summary: 's', evidence: 'e' });
   call(dir, 'verify_task', { agent: 'commander', taskId: 't1', accepted: true, howChecked: 'ran it myself' });
   // New milestone first, B's checks reordered, a1 dropped.
-  const g = call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'New', win: 'w', checks: ['n1'] }, { title: 'A', win: 'w', checks: ['a2'] }, { title: 'B', win: 'w', checks: ['b2', 'b1'] }] }).json;
+  const g = call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'New', win: 'w', due: '2099-12-31', checks: ['n1'] }, { title: 'A', win: 'w', due: '2099-12-31', checks: ['a2'] }, { title: 'B', win: 'w', due: '2099-12-31', checks: ['b2', 'b1'] }] }).json;
   const checks = g.milestones.flatMap((m) => m.checks);
   assert.deepEqual(checks.map((c) => c.id), ['g1.m1.c1', 'g1.m2.c1', 'g1.m3.c1', 'g1.m3.c2']);
   assert.deepEqual(checks.map((c) => c.text), ['n1', 'a2', 'b2', 'b1']);
@@ -176,7 +176,7 @@ test('today: the founder ticks a goal with no task; task-linked goals tick thems
   call(dir, 'propose_goal', { agent: 'commander', title: 'G', founderWords: 'g', what: 'x', forWhom: 'x', byWhen: 'x', doneLooksLike: 'x', mustNever: 'x' });
   call(dir, 'judge_goal', { agent: 'commander', goalId: 'g1', fit: 'x', cost: 'x', risks: 'x', strongerVersion: 'none', learn: [], recommendation: 'keep', reason: 'x' });
   call(dir, 'decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'ok' });
-  call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', checks: ['a1'] }] });
+  call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', due: '2099-12-31', checks: ['a1'] }] });
   call(dir, 'create_task', { agent: 'commander', goalId: 'g1', title: 'T', assignTo: 'w1', doneCheck: 'x' });
   call(dir, 'set_today', { agent: 'commander', goalId: 'g1', items: [{ text: '你：讀筆記一' }, { text: '寫程式', taskId: 't1' }] });
   assert.match(page(dir), /data-tick="0" data-goal="g1" data-text="你：讀筆記一" data-done="0"/);
@@ -212,13 +212,13 @@ test('learning depends on the goal: topics become notes to write; a goal with no
   assert.ok(!JSON.parse(fs.readFileSync(path.join(plain, '.warroom/goals.json'), 'utf8'))[0].verdict, 'the commander must say whether the goal needs learning');
   const noLearn = tmpProject();
   judged(noLearn, []);
-  assert.ok(!call(noLearn, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', checks: ['a1'] }] }).json.next);
+  assert.doesNotMatch(call(noLearn, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', due: '2099-12-31', checks: ['a1'] }] }).json.next, /needs learning/);
   assert.ok(!page(noLearn).includes('data-go="shelf"'), 'no learning and nothing shelved: no Shelf tab');
   assert.doesNotMatch(brief(noLearn), /Learning notes/);
 
   const dir = tmpProject();
   judged(dir, ['事件溯源', '種子隨機']);
-  assert.match(call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', checks: ['a1'] }] }).json.next, /事件溯源; 種子隨機/);
+  assert.match(call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', due: '2099-12-31', checks: ['a1'] }] }).json.next, /事件溯源; 種子隨機/);
   assert.match(brief(dir), /Learning notes still to write[^\n]*\n- g1: 事件溯源; 種子隨機/);
   assert.match(page(dir), /data-go="shelf"/);
   assert.match(page(dir), /To learn for: G[\s\S]*0\/2 written[\s\S]*Note not written yet/);
@@ -233,16 +233,16 @@ test('milestones: as many as the goal needs, never zero, and each with a check',
   const dir = tmpProject();
   judged(dir, []);
   const plan = (milestones) => call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones });
-  assert.equal(plan([{ title: 'Only', win: 'w', checks: ['c'] }]).json.milestones.length, 1);
-  assert.equal(plan(Array.from({ length: 12 }, (_, i) => ({ title: `M${i}`, win: 'w', checks: [`c${i}`] }))).json.milestones.length, 12);
+  assert.equal(plan([{ title: 'Only', win: 'w', due: '2099-12-31', checks: ['c'] }]).json.milestones.length, 1);
+  assert.equal(plan(Array.from({ length: 12 }, (_, i) => ({ title: `M${i}`, win: 'w', due: '2099-12-31', checks: [`c${i}`] }))).json.milestones.length, 12);
   assert.match(plan([]).error, /at least one milestone/);
-  assert.match(plan([{ title: 'Empty', win: 'w', checks: [] }]).error, /"Empty" has no check/);
+  assert.match(plan([{ title: 'Empty', win: 'w', due: '2099-12-31', checks: [] }]).error, /"Empty" has no check/);
 });
 
 test('study bar: the founder marks notes read; the bar counts read notes out of all topics to learn', async (tc) => {
   const dir = tmpProject();
   judged(dir, ['事件溯源', '種子隨機']);
-  call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', checks: ['a1'] }] });
+  call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', due: '2099-12-31', checks: ['a1'] }] });
   call(dir, 'shelve', { agent: 'commander', path: 'docs/學習/01-事件溯源.md', goalId: 'g1', topic: '事件溯源' });
   assert.match(page(dir), /Your study[\s\S]*0 of 2 read<\/em>[\s\S]*1 note not written yet/);
   const port = 45000 + Math.floor(Math.random() * 900);

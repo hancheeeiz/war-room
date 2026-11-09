@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
+import { addonList, approveAddon, startAddons } from '../server/addons.mjs';
 import { resumeAfterApproval, wakeCommander, wakeMember } from '../server/agents.mjs';
 import { STARTER_RULES, starterRules } from '../server/starter-rules.mjs';
-import { autoRemember, brief, callTool, consumeApproval, requestApproval, resolveApproval, markRead, ruleInForce, tickToday } from '../server/tools.mjs';
+import { autoRemember, brief, callTool, consumeApproval, dailyCheck, requestApproval, resolveApproval, markRead, ruleInForce, tickToday } from '../server/tools.mjs';
 
 const [cmd, ...rest] = process.argv.slice(2);
 const flag = (name, dflt) => { const i = rest.indexOf(`--${name}`); return i >= 0 ? rest[i + 1] : dflt; };
@@ -19,7 +20,9 @@ const FOUNDER_YES = [
   // Switching the guard itself off is a founder decision too.
   [/\bclaude\s+(plugin|plugins|mcp)\s+(disable|uninstall|remove|rm)\b|\.claude\/(settings[^\s/]*\.json|plugins\/)|hooks\/hooks\.json/, 'switching off or changing the safety guard'],
   // Any shell command that touches .warroom or names the approvals file asks first (covers cd, cp, node -e …).
-  [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer|founder_answer|decide_goal|confirm-rules|tick|read)\b|\bwar-room(\.mjs)?\b[^|;&\n]*\brules\s+--o(ff|n)\b|\.warroom\b|\bapprovals\.json\b|\.config\/war-room\b|\bWAR_ROOM_HOME\b/, 'approving, answering for the founder, or changing war-room files'],
+  [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer|founder_answer|decide_goal|confirm-rules|tick|read|addon)\b|\bwar-room(\.mjs)?\b[^|;&\n]*\brules\s+--o(ff|n)\b|\.warroom\b|\bapprovals\.json\b|\.config\/war-room\b|\bWAR_ROOM_HOME\b/, 'approving, answering for the founder, or changing war-room files'],
+  // Task tools from the shell would let one chat take, report or check work under another chat's name.
+  [/\bwar-room(\.mjs)?\b[^|;&\n]*\bcall\s+['"]?(get_task_packet|report_done|verify_task|create_task|reassign_task)\b/, 'taking, reporting or checking a task from the shell (each role works in its own chat)'],
   [/\b(firebase|vercel|netlify|fly|flyctl|wrangler|eas|amplify|gcloud|aws|heroku|render)\b[^|;&]*\b(deploy|publish|submit)\b|--prod\b|\bkubectl\s+(apply|delete|rollout|scale)\b|\bterraform\s+(apply|destroy)\b|\bdocker\s+push\b|\bsupabase\s+(db\s+push|functions\s+deploy)\b|\brailway\s+up\b/, 'deploy'],
   [/\b(npm|pnpm|yarn|bun)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b|\bpod\s+trunk\s+push\b|\bgh\s+release\s+(create|upload|edit)\b|\bgh\s+repo\s+(create|edit|rename|archive)\b|\bgh\s+pr\s+merge\b/, 'publishing'],
   // Connecting another agent changes that tool's own settings files.
@@ -157,6 +160,10 @@ async function serve(opts = {}) {
     '/api/read': (b) => {
       try { markRead(store, { id: String(b.id), read: b.read !== false }); return { text: 'ok' }; } catch (e) { return { error: e.message }; }
     },
+    // The founder approves or switches off an add-on the commander registered.
+    '/api/addon': (b) => {
+      try { approveAddon(store, { name: String(b.name), approve: b.approve !== false }); return { text: 'ok' }; } catch (e) { return { error: e.message }; }
+    },
     '/api/goal': (b) => {
       const out = callTool(store, 'decide_goal', { agent: store.config().commander, goalId: String(b.goalId), choice: String(b.choice), founderWords: `chose "${b.choice}" on the war-room page` });
       // A kept goal needs a plan next: let the commander carry on without the founder opening a chat.
@@ -214,7 +221,12 @@ async function startWatch(opts = {}) {
   const { renderDashboard } = await import('../server/dashboard.mjs');
   const redraw = () => { try { fs.writeFileSync(`${store.root}/dashboard.html`, renderDashboard(store)); } catch {} };
   console.log(`Watching ${store.root}: stale check every ${mins} min; file changes redraw the dashboard and notify instantly. Ctrl-C to stop.`);
-  const pass = () => { const n = checkStale(store); if (n) notify(store, `${n} stale task(s) — alert in the commander's inbox.`); redraw(); };
+  const pass = () => {
+    const n = checkStale(store);
+    if (n) notify(store, `${n} stale task(s) — alert in the commander's inbox.`);
+    try { const daily = dailyCheck(store); if (daily) notify(store, daily); } catch {}
+    redraw();
+  };
   pass();
   setInterval(pass, mins * 60e3);
   let debounce;
@@ -280,6 +292,7 @@ switch (cmd) {
       if (!rest.includes('--no-open') && process.platform === 'darwin') execFile('open', [`http://127.0.0.1:${port}/`], () => {});
     } });
     await startWatch({ every: Number(flag('every', 60)) });
+    for (const a of await startAddons(store)) console.log(`Started add-on ${a.name} (log ${a.log}).`);
     const bye = () => { try { if (JSON.parse(fs.readFileSync(upFile, 'utf8')).pid === process.pid) fs.rmSync(upFile); } catch {} process.exit(0); };
     process.on('SIGINT', bye); process.on('SIGTERM', bye);
     break;
@@ -445,6 +458,36 @@ switch (cmd) {
     if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
     await startWatch();
     break;
+  case 'addon': {
+    // The founder's add-ons: list them, approve one (--approve), switch one off (--off), or start the approved ones.
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    const name = flag('name') || flag('id');
+    try {
+      if (name && (rest.includes('--approve') || rest.includes('--off'))) {
+        const a = approveAddon(store, { name, approve: rest.includes('--approve') });
+        console.log(`${a.name}: ${a.off ? 'switched off' : 'approved'}.`);
+        break;
+      }
+      if (rest.includes('--start')) { const s = await startAddons(store); console.log(s.length ? s.map((a) => `Started ${a.name} (log ${a.log})`).join('\n') : 'Nothing to start (not approved, no start command, or already running).'); break; }
+      const list = addonList(store, { fresh: true });
+      if (!list.length) { console.log('No add-ons yet. The commander registers one with add_feature.'); break; }
+      for (const a of list) {
+        console.log(`\n${a.name} · ${a.title} · ${a.active ? 'approved' : a.off ? 'off' : 'NOT approved'}${a.purpose ? `\n  ${a.purpose}` : ''}`);
+        for (const k of ['url', 'start', 'waiting']) if (a[k]) console.log(`  ${k}: ${a[k]}`);
+        if (a.waitingNow) console.log(a.waitingNow.error ? `  waiting check failed: ${a.waitingNow.error}` : `  ${a.waitingNow.items.length} waiting${a.waitingNow.items.slice(0, 5).map((l) => `\n    · ${l}`).join('')}`);
+      }
+      if (list.some((a) => !a.active && !a.off)) console.log('\nRead the commands above, then approve one with: war-room addon --name NAME --approve');
+    } catch (e) { console.error(e.message); process.exitCode = 1; }
+    break;
+  }
+  case 'daily': {
+    // Make today's list and send the daily summary now (the watcher does this by itself once a day).
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    const text = dailyCheck(store, { force: true });
+    notify(store, text);
+    console.log(text);
+    break;
+  }
   case 'hook-session-start': {
     // Silent when the project has no war room: no clear goal, no war room.
     if (!store.exists()) break;
@@ -489,6 +532,8 @@ switch (cmd) {
   connect codex|gemini|cursor [--yes]   join another agent to the war room
   rules [--off sN --yes | --on sN --yes]   starter rules and your rules
   approve --id A --yes|--no · answer --question ID --text "..." · confirm-rules [--yes]
+  addon [--name N --approve|--off] [--start]   your add-ons: list, approve, switch off, start
+  daily                           make today's list and send the daily summary now
   tick --item N [--goal G] [--undo]   tick today's goal N yourself (one with no task behind it)
   read --note bN [--undo]             mark a shelf note read (moves your study bar)
   init · serve [--lan] · watch · dashboard · brief [--agent N] · call TOOL [JSON] · check-stale`);

@@ -1,5 +1,6 @@
 // War room tools. The MCP server and the CLI both call these, so every agent sees the same rules.
 import path from 'node:path';
+import { ADDON_NAME, LOCAL_URL, addonInForce, addonList } from './addons.mjs';
 import { createDebate, launchDebate, runStatus, startWorker, stoppedWorkers } from './agents.mjs';
 import { firstHeading, readShelfItem, resolveShelfPath } from './shelf.mjs';
 import { starterRules } from './starter-rules.mjs';
@@ -108,6 +109,80 @@ function overBudget(store) {
   return { budget, agents: Object.entries(todayEvents(store)).filter(([, n]) => n > budget) };
 }
 
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+// A milestone is behind schedule once its due day has passed with checks still open.
+function isOverdue(m, percent) {
+  return !!m.due && percent < 100 && today() > m.due;
+}
+
+// Each new day the war room makes today's list itself, so it never starts empty: yesterday's unfinished items carry
+// over, then the next open checks of the plan fill it up to three (linked to their task, so they tick themselves).
+// The commander can still replace it with set_today.
+export function ensureToday(store) {
+  const d = today();
+  // Read first and write only when a list is missing: the page and the watcher call this on every redraw, and the
+  // watcher redraws on every file change, so an unconditional write would loop (and notify) forever.
+  if (!store.read('goals').some((g) => g.status === 'active' && g.milestones?.length && !g.daily?.[d])) return [];
+  const tasks = store.read('tasks');
+  const made = [];
+  store.update('goals', (goals) => {
+    for (const g of goals) {
+      if (g.status !== 'active' || !g.milestones?.length) continue;
+      g.daily ||= {};
+      if (g.daily[d]) continue;
+      const checkDone = (id) => g.milestones.some((m) => m.checks.some((c) => c.id === id && c.verified));
+      const done = (it) => { const t = tasks.find((x) => x.id === it.taskId); return t ? t.status === 'verified' : !!it.done || (it.checkId && checkDone(it.checkId)); };
+      const last = Object.keys(g.daily).filter((k) => k < d).sort().pop();
+      const items = (last ? g.daily[last] : []).filter((it) => !done(it)).map(({ done: _, ...it }) => ({ ...it, carried: true }));
+      for (const m of g.milestones) for (const c of m.checks) {
+        if (items.length >= 3) break;
+        if (c.verified) continue;
+        const t = tasks.find((x) => x.checkId === c.id && x.status !== 'verified');
+        if (items.some((it) => it.text === c.text || (t && it.taskId === t.id))) continue;
+        items.push({ text: c.text, ...(t ? { taskId: t.id } : {}), checkId: c.id });
+      }
+      // An empty list is still stored, so a goal with nothing left today is not rebuilt (and rewritten) on every read.
+      g.daily[d] = items;
+      (g.dailyAuto ||= {})[d] = true;
+      if (items.length) made.push(g.id);
+    }
+  });
+  for (const id of made) store.log({ agent: 'war-room', event: 'today_auto', id });
+  return made;
+}
+
+// Once a day (the watcher's first pass of the day, or `war-room daily`): make today's list, then put one plain
+// summary in the commander's inbox (today, behind schedule, waiting on the founder, open work nobody runs).
+// Returns the summary, or null when today's was already sent.
+export function dailyCheck(store, { force = false } = {}) {
+  ensureToday(store);
+  const d = today();
+  if (!force && store.readLog(100000).some((e) => e.event === 'daily_check' && e.at?.startsWith(d))) return null;
+  const tasks = store.read('tasks');
+  const goals = store.read('goals').filter((g) => g.status === 'active');
+  // Nothing planned yet: no daily message, so an idle war room does not ping the founder every morning.
+  if (!goals.length && !force) return null;
+  const memory = store.read('memory');
+  const lines = [`Daily check ${d}.`];
+  for (const g of goals) {
+    const p = progress(g, tasks);
+    lines.push(`${g.title}: ${p.percent}% · today ${p.today.filter((i) => i.done).length}/${p.today.length}${p.today.length ? ` (${p.today.map((i) => i.text).join('; ').slice(0, 200)})` : ''}`);
+    for (const m of p.milestones.filter((x) => x.overdue)) lines.push(`Behind: ${m.title}, due ${m.due}, ${m.percent}% done.`);
+    if (g.milestones?.some((m) => !m.due)) lines.push(`${g.id} has milestones with no date: re-plan with due dates.`);
+  }
+  const qs = memory.filter((m) => m.kind === 'question' && m.status === 'active').length;
+  if (qs) lines.push(`${qs} question(s) waiting on the founder.`);
+  for (const x of addonList(store, { fresh: true }).filter((y) => y.active && y.waitingNow?.items.length)) lines.push(`${x.title}: ${x.waitingNow.items.length} waiting.`);
+  const runs = store.read('runs');
+  const idle = [...new Set(tasks.filter((t) => t.status === 'open' && !(t.after && tasks.find((y) => y.id === t.after)?.status !== 'verified')).map((t) => t.agent))]
+    .filter((n) => { const r = runs.filter((x) => x.name === n).pop(); return !(r && runStatus(r) === 'running'); });
+  if (idle.length) lines.push(`Open work with nobody running: ${idle.join(', ')}. Start their workers.`);
+  const text = lines.join(' ');
+  store.update('messages', (messages) => { messages.push({ id: messages.length + 1, from: 'war-room', to: store.config().commander, kind: 'info', text, date: now(), open: true }); });
+  store.log({ agent: 'war-room', event: 'daily_check', text });
+  return text;
+}
+
 // The founder's study progress on a goal's learning list: topics with a note, and notes the founder marked read.
 export function studyProgress(goal, shelf) {
   const topics = goal.verdict?.learn || [];
@@ -129,11 +204,10 @@ function progress(goal, tasks, shelf = []) {
     status: goal.status,
     percent: checks.length ? Math.round((verified / checks.length) * 100) : 0,
     verifiedChecks: `${verified}/${checks.length}`,
-    milestones: (goal.milestones || []).map((m) => ({
-      id: m.id,
-      title: m.title,
-      percent: m.checks?.length ? Math.round((m.checks.filter((c) => c.verified).length / m.checks.length) * 100) : 0,
-    })),
+    milestones: (goal.milestones || []).map((m) => {
+      const percent = m.checks?.length ? Math.round((m.checks.filter((c) => c.verified).length / m.checks.length) * 100) : 0;
+      return { id: m.id, title: m.title, percent, start: m.start, due: m.due, overdue: isOverdue(m, percent) };
+    }),
     today: todayItems,
     ...(goal.verdict?.learn?.length ? { study: studyProgress(goal, shelf) } : {}),
   };
@@ -156,6 +230,7 @@ function relevantMemory(memory, text, limit, anyKind = false) {
 }
 
 export function brief(store, agent) {
+  ensureToday(store);
   const cfg = store.config();
   const memory = store.read('memory');
   const tasks = store.read('tasks');
@@ -180,6 +255,31 @@ export function brief(store, agent) {
   if (agent === cfg.commander) {
     const active = goals.filter((g) => !['done', 'dropped'].includes(g.status));
     if (active.length) out.push('', '## Goals', ...active.map((g) => { const p = progress(g, tasks, store.read('shelf')); return `- ${g.id} [${g.status}] ${g.title} — ${p.percent}% (${p.verifiedChecks} checks verified)${p.study ? `; founder has read ${p.study.read} of ${p.study.total} learning notes` : ''}`; }));
+    const planned = active.filter((g) => g.milestones?.length);
+    const behind = planned.flatMap((g) => progress(g, tasks).milestones.filter((m) => m.overdue).map((m) => `- ${m.id} ${m.title}: due ${m.due}, ${m.percent}% done`));
+    if (behind.length) out.push('', '## Behind schedule (tell the founder plainly, then re-plan or add help)', ...behind);
+    const undated = planned.filter((g) => g.milestones.some((m) => !m.due));
+    if (undated.length) out.push('', '## Plans without dates (call set_plan again with a due date for every milestone)', ...undated.map((g) => `- ${g.id} ${g.title}`));
+    const todays = planned.filter((g) => g.daily?.[today()]?.length);
+    if (todays.length) out.push('', `## Today ${today()}`, ...todays.flatMap((g) => [
+      ...(g.dailyAuto?.[today()] ? [`(${g.id}: made by the war room from the plan; improve it with set_today if needed)`] : []),
+      ...progress(g, tasks).today.map((it) => `- [${it.done ? 'x' : ' '}] ${it.at ? `${it.at} ` : ''}${it.text}${it.taskId ? ` (${it.taskId})` : ''}${it.carried ? ' · carried over' : ''}`),
+    ]));
+    const said = memory.filter((m) => m.status === 'active' && ['decision', 'pref'].includes(m.kind)).sort((x, y) => (y.date || '').localeCompare(x.date || '')).slice(0, 12);
+    if (said.length) out.push('', '## What the founder decided and prefers (newest first; recall finds the rest — never ask these again)', ...said.map((m) => `- [${m.id}] ${(m.date || '').slice(0, 10)} ${m.text.length > 180 ? `${m.text.slice(0, 177)}…` : m.text}`));
+    const idle = [...new Set(tasks.filter((t) => t.status === 'open' && t.agent !== cfg.commander && !(t.after && tasks.find((y) => y.id === t.after)?.status !== 'verified')).map((t) => t.agent))]
+      .filter((name) => { const r = store.read('runs').filter((x) => x.name === name).pop(); return !(r && runStatus(r) === 'running'); });
+    if (idle.length) out.push('', '## Open work with nobody on it (start_worker each, now; do not do it yourself)', ...idle.map((n) => `- ${n}: ${tasks.filter((t) => t.agent === n && t.status === 'open').map((t) => t.id).join(', ')}`));
+    const mineAsCommander = tasks.filter((t) => t.agent === cfg.commander && !['verified'].includes(t.status));
+    if (mineAsCommander.length) out.push('', '## Tasks still assigned to you, the commander (reassign_task each to a team member; you check work, you do not do it)', ...mineAsCommander.map((t) => `- ${t.id} ${t.title}`));
+    const addons = addonList(store);
+    if (addons.length) out.push('', '## Add-ons (features built for this founder; check what waits in each)', ...addons.flatMap((x) => {
+      if (!x.active) return [`- ${x.name} (${x.title}): ${x.off ? 'switched off by the founder' : 'waiting for the founder\'s approval on the page'}`];
+      const w = x.waitingNow;
+      if (!w) return [`- ${x.name} (${x.title}): approved${x.url ? ` · ${x.url}` : ''}`];
+      if (w.error) return [`- ${x.name} (${x.title}): its waiting check failed (${w.error}); fix it`];
+      return [`- ${x.name} (${x.title}): ${w.items.length ? `${w.items.length} waiting` : 'nothing waiting'}`, ...w.items.slice(0, 5).map((l) => `  · ${l.slice(0, 160)}`)];
+    }));
     const learning = active.map((g) => [g, learningDue(store, g)]).filter(([g, due]) => due.length && ['approved', 'active'].includes(g.status));
     if (learning.length) out.push('', '## Learning notes still to write (one short note each, then shelve it with goalId and topic)', ...learning.map(([g, due]) => `- ${g.id}: ${due.join('; ')}`));
     if (team.length) out.push('', '## Your team (route each piece of work to the right role; hire adds one)', ...team.map((m) => `- ${m.name}: ${m.role}${m.does ? ` — ${m.does}` : ''} (${m.use || 'claude'}${m.model ? ` ${m.model}` : ''})`));
@@ -202,7 +302,7 @@ export function brief(store, agent) {
   out.push('', 'Safety: pushes, deploys, publishing, deleting data, money and keys each need the founder\'s yes at that step. If your platform has approval settings for such actions, keep them on.');
   out.push('', 'Memory and the full plan live in the war room: use recall / war_room_status, never ask the founder what memory already answers.');
   const text = out.join('\n');
-  return text.length > 6000 ? `${text.slice(0, 5950)}\n… (cut; call war_room_status)` : text;
+  return text.length > 9000 ? `${text.slice(0, 8950)}\n… (cut; call war_room_status)` : text;
 }
 
 function packetText(t, goals, memory) {
@@ -232,6 +332,7 @@ export const TOOLS = [
     description: 'Progress bars: each goal with % of verified checks, milestones, today\'s goals, every agent\'s task, and the last 10 log events.',
     inputSchema: { type: 'object', properties: {} },
     run: (store) => {
+      ensureToday(store);
       const tasks = store.read('tasks');
       const goals = store.read('goals').filter((g) => g.status !== 'dropped');
       const agents = Object.create(null);
@@ -448,12 +549,12 @@ export const TOOLS = [
   },
   {
     name: 'set_plan',
-    description: 'Commander only: set milestones for an approved goal. Use as many milestones as the goal really needs (one for a small job, more for a big one); there is no set number. Each milestone has a win condition and at least one check; progress counts only verified checks.',
+    description: 'Commander only: set milestones for an approved goal. Use as many milestones as the goal really needs (one for a small job, more for a big one); there is no set number. Each milestone has a win condition, at least one check and a due date (YYYY-MM-DD, optional start); progress counts only verified checks, and a milestone past its due date shows as behind schedule.',
     inputSchema: {
       type: 'object',
       properties: {
         agent: AGENT, goalId: str('Goal id.'),
-        milestones: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, win: { type: 'string' }, checks: { type: 'array', items: { type: 'string' } } }, required: ['title', 'win', 'checks'] } },
+        milestones: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, win: { type: 'string' }, checks: { type: 'array', items: { type: 'string' } }, start: { type: 'string', description: 'First day, YYYY-MM-DD (optional).' }, due: { type: 'string', description: 'Day it must be won by, YYYY-MM-DD. Required: a plan without dates is a wish list.' } }, required: ['title', 'win', 'checks', 'due'] } },
       },
       required: ['agent', 'goalId', 'milestones'],
     },
@@ -466,6 +567,11 @@ export const TOOLS = [
         if (!a.milestones.length) throw new Refused('A plan needs at least one milestone.');
         const empty = a.milestones.find((m) => !m.checks.length);
         if (empty) throw new Refused(`Milestone "${empty.title}" has no check. Give it at least one thing you can re-run or look at.`);
+        for (const m of a.milestones) {
+          if (!DATE.test(m.due || '')) throw new Refused(`Milestone "${m.title}" needs a due date as YYYY-MM-DD (the day it must be won by). Work it out from the goal's deadline${g.intake?.byWhen ? ` ("${g.intake.byWhen}")` : ''}; if the founder gave none, ask them.`);
+          if (m.start && !DATE.test(m.start)) throw new Refused(`Milestone "${m.title}": start must be YYYY-MM-DD.`);
+          if (m.start && m.start > m.due) throw new Refused(`Milestone "${m.title}" starts after it is due.`);
+        }
         // A check found again by its text keeps only its verified state and evidence; its id always follows its
         // new place, so a reordered plan never ends up with two g1.m1.c3 or an m3 check called g1.m2.*.
         const old = (g.milestones || []).flatMap((m) => m.checks || []);
@@ -473,7 +579,7 @@ export const TOOLS = [
         for (const c of old) if (!kept.has(c.text)) kept.set(c.text, c);
         const moved = new Map();
         g.milestones = a.milestones.map((m, i) => ({
-          id: `${g.id}.m${i + 1}`, title: m.title, win: m.win,
+          id: `${g.id}.m${i + 1}`, title: m.title, win: m.win, due: m.due, ...(m.start ? { start: m.start } : {}),
           checks: m.checks.map((text, j) => {
             const id = `${g.id}.m${i + 1}.c${j + 1}`;
             const was = kept.get(text);
@@ -482,6 +588,8 @@ export const TOOLS = [
           }),
         }));
         g.status = 'active';
+        // A new plan gets a fresh automatic list for today (one the commander or founder shaped is kept).
+        if (g.dailyAuto?.[today()] && !(g.daily?.[today()] || []).some((it) => it.done)) delete g.daily[today()];
         store.log({ agent: a.agent, event: 'set_plan', id: g.id, milestones: g.milestones.length });
         return { g, moved, dropped: new Set(old.map((c) => c.id).filter((id) => !moved.has(id))) };
       });
@@ -495,19 +603,26 @@ export const TOOLS = [
         }
       });
       const due = learningDue(store, out.g);
-      return due.length ? { ...out.g, next: `This goal needs learning. For each topic write one short plain note in the project and shelve it with goalId "${out.g.id}": ${due.join('; ')}.` } : out.g;
+      const deadline = (out.g.intake?.byWhen || '').match(/\d{4}-\d{2}-\d{2}/g)?.sort().pop();
+      const lastDue = out.g.milestones.map((m) => m.due).sort().pop();
+      const late = deadline && lastDue > deadline ? `The last milestone is due ${lastDue}, after the goal's deadline ${deadline}. Tell the founder, or tighten the dates.` : undefined;
+      const next = [due.length ? `This goal needs learning. For each topic write one short plain note in the project and shelve it with goalId "${out.g.id}": ${due.join('; ')}.` : '', 'Next: create_task for the first milestone\'s checks and hand them to your team; do not do them yourself.'].filter(Boolean).join(' ');
+      return { ...out.g, next, ...(late ? { warning: late } : {}) };
     },
   },
   {
     name: 'set_today',
-    description: 'Commander only: set today\'s goals for a goal (short list, each optionally linked to a task). A goal linked to a task ticks itself when that task is verified; one without a task the founder ticks on the page.',
-    inputSchema: { type: 'object', properties: { agent: AGENT, goalId: str('Goal id.'), items: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, taskId: { type: 'string' } }, required: ['text'] } } }, required: ['agent', 'goalId', 'items'] },
+    description: 'Commander only: set today\'s goals for a goal (short list, each optionally linked to a task, optionally with a time "at": "HH:MM"). The war room already makes a list by itself each morning from the plan; use this to improve it. A goal linked to a task ticks itself when that task is verified; one without a task the founder ticks on the page.',
+    inputSchema: { type: 'object', properties: { agent: AGENT, goalId: str('Goal id.'), items: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, taskId: { type: 'string' }, at: { type: 'string', description: 'Time of day to do it, HH:MM (optional; for the founder\'s own items).' } }, required: ['text'] } } }, required: ['agent', 'goalId', 'items'] },
     run: (store, a) => {
       needCommander(store, a.agent);
       return store.update('goals', (goals) => {
         const g = goals.find((x) => x.id === a.goalId);
         if (!g) throw new Refused(`No goal ${a.goalId}.`);
         // A goal the founder already ticked on the page stays ticked when the commander sets the list again.
+        const bad = a.items.find((it) => it.at && !/^([01]\d|2[0-3]):[0-5]\d$/.test(it.at));
+        if (bad) throw new Refused(`"${bad.text}": at must be a time like 09:30.`);
+        if (g.dailyAuto) delete g.dailyAuto[today()];
         const before = (g.daily ||= {})[today()] || [];
         const items = a.items.map((it) => (!it.taskId && before.some((b) => b.done && !b.taskId && b.text === it.text) ? { ...it, done: true } : it));
         g.daily[today()] = items;
@@ -533,10 +648,11 @@ export const TOOLS = [
     },
     run: (store, a) => {
       needCommander(store, a.agent);
+      if (a.assignTo === store.config().commander) throw new Refused('The commander routes and checks work; it does not take tasks. Give this to a team member (hire one if no role fits), so someone other than the doer checks it.');
       const goal = store.read('goals').find((g) => g.id === a.goalId);
       if (!goal || goal.status !== 'active') throw new Refused('Tasks need an active goal with a plan (set_plan).');
       const memory = store.read('memory');
-      return store.update('tasks', (tasks) => {
+      const out = store.update('tasks', (tasks) => {
         const clash = (a.files || []).length && tasks.find((t) => !['verified'].includes(t.status) && t.agent !== a.assignTo && (t.files || []).some((f) => a.files.some((g) => f.startsWith(g) || g.startsWith(f))));
         if (clash) throw new Refused(`${clash.agent} is already working on overlapping files (${clash.id}). One writer per file: wait or pick other files.`);
         if (a.after && !tasks.some((x) => x.id === a.after)) throw new Refused(`No task ${a.after} to wait for.`);
@@ -546,6 +662,7 @@ export const TOOLS = [
         const missedMemory = relevantMemory(memory, `${t.title} ${t.doneCheck} ${(t.tags || []).join(' ')}`, 6, true).filter((m) => !t.rules.includes(m.id)).map(({ id, kind, date, text }) => ({ id, kind, date, text }));
         return { task: t, missedMemory, remind: missedMemory.length ? 'Memory items that match this task but are not in its rules — add any that apply (they also ride along in the packet automatically).' : undefined };
       });
+      return { ...out, worker: autoStart(store, out.task) };
     },
   },
   {
@@ -554,7 +671,8 @@ export const TOOLS = [
     inputSchema: { type: 'object', properties: { agent: AGENT, taskId: str('Task id.'), assignTo: str('The agent that takes it over.'), reason: str('Why, one line (e.g. "claimed 3h ago, no report").') }, required: ['agent', 'taskId', 'assignTo', 'reason'] },
     run: (store, a) => {
       needCommander(store, a.agent);
-      return store.update('tasks', (tasks) => {
+      if (a.assignTo === store.config().commander) throw new Refused('The commander does not take tasks: reassign it to a team member.');
+      const t = store.update('tasks', (tasks) => {
         const t = tasks.find((x) => x.id === a.taskId);
         if (!t) throw new Refused(`No task ${a.taskId}.`);
         if (t.status === 'verified') throw new Refused(`${t.id} is already verified.`);
@@ -563,6 +681,7 @@ export const TOOLS = [
         store.log({ agent: a.agent, event: 'reassign', id: t.id, to: a.assignTo, reason: a.reason });
         return t;
       });
+      return { task: t, worker: autoStart(store, t) };
     },
   },
   {
@@ -593,6 +712,7 @@ export const TOOLS = [
         const t = tasks.find((x) => x.id === a.taskId);
         if (!t) throw new Refused(`No task ${a.taskId}.`);
         if (t.agent !== a.agent) throw new Refused(`${a.taskId} belongs to ${t.agent}.`);
+        if (!['claimed', 'rejected'].includes(t.status)) throw new Refused(`${t.id} is "${t.status}". Take it with get_task_packet first, do the work, then report it.`);
         t.status = 'reported';
         t.report = { summary: a.summary, evidence: a.evidence, notVerified: a.notVerified, date: now() };
         store.log({ agent: a.agent, event: 'report_done', id: t.id });
@@ -629,7 +749,12 @@ export const TOOLS = [
         });
       }
       store.log({ agent: a.agent, event: a.accepted ? 'verified' : 'rejected', id: t.id });
-      if (a.accepted) startNextSteps(store, t.id);
+      if (a.accepted) {
+        startNextSteps(store, t.id);
+        // A worker chat stops after its report: if that role has more ready work, start it again.
+        const next = store.read('tasks').find((x) => x.agent === t.agent && x.status === 'open' && !x.after);
+        if (next) autoStart(store, next);
+      }
       if (!a.accepted) autoRemember(store, { kind: 'problem', text: `${t.id} (${t.title}) by ${t.agent} failed the commander's check: ${a.howChecked}`, source: a.agent, tags: [t.id, ...(t.tags || [])] });
       return t;
     },
@@ -660,6 +785,23 @@ export const TOOLS = [
     }),
   },
 ];
+
+// A task for a hired team member starts its worker chat straight away (unless it waits for another task, or that
+// member's chat is already running and will pick it up). Turn off with "autoStartWorkers": false in config.json.
+function autoStart(store, t) {
+  if (store.config().autoStartWorkers === false || t.after) return undefined;
+  const member = store.read('team').find((m) => m.name === t.agent);
+  if (!member) return `Not started: ${t.agent} is not on the team. hire it, then start_worker, so the work does not sit open.`;
+  const last = store.read('runs').filter((r) => r.name === t.agent).pop();
+  if (last && runStatus(last) === 'running') return `${t.agent} is already running and will take it.`;
+  try {
+    const run = startWorker(store, { name: t.agent, agent: member.use || 'claude', model: member.model });
+    return `Started ${t.agent} (${run.id}); its report lands in your inbox.`;
+  } catch (e) {
+    autoRemember(store, { kind: 'problem', text: `Could not start ${t.agent} for ${t.id}: ${e.message}`, source: 'war-room', tags: [t.id] });
+    return `Could not start ${t.agent}: ${e.message}`;
+  }
+}
 
 // Step-by-step chains: once a task is verified, start the workers whose task was waiting for it.
 export function startNextSteps(store, doneId) {
@@ -765,6 +907,48 @@ export function markRead(store, { id, read = true }) {
     return b;
   });
 }
+
+// ── Add-ons: features this war room grows for its founder ───────────
+TOOLS.push({
+  name: 'add_feature',
+  description: 'Commander only: register a feature you built in this project for the founder (a lesson page, a tracker, a small tool), so it shows on the war-room page under "Your tools", starts with `war-room up`, and its waiting items reach your brief and the daily check. Give url (a local http://localhost page) and/or start (the command that starts it) and waiting (a command that prints one line per thing waiting for you or the founder, e.g. unanswered questions). It does nothing until the founder approves it on the page; changing a command or the url needs their approval again. remove=true takes it off (the project files stay).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      agent: AGENT, name: str('Short id: lowercase letters, digits and dashes, e.g. "lessons".'), title: str('What the founder calls it, any language.'),
+      purpose: str('One plain line: what it is for.'), goalId: str('The goal it serves, if any.'),
+      url: str('Where to open it: http://localhost:PORT/ or http://127.0.0.1:PORT/ only.'), start: str('Command that starts it from the project folder, e.g. "npm run learn".'),
+      waiting: str('Command that prints one line per thing waiting (empty output = nothing waiting). Keep it quick and read-only.'),
+      remove: { type: 'boolean', description: 'Take it off.' },
+    },
+    required: ['agent', 'name'],
+  },
+  run: (store, a) => {
+    needCommander(store, a.agent);
+    if (!ADDON_NAME.test(a.name)) throw new Refused('name: lowercase letters, digits and dashes, up to 31 characters.');
+    return store.update('addons', (addons) => {
+      const i = addons.findIndex((x) => x.name === a.name);
+      if (a.remove) {
+        if (i < 0) throw new Refused(`No add-on "${a.name}".`);
+        addons.splice(i, 1);
+        store.log({ agent: a.agent, event: 'addon_removed', id: a.name });
+        return { removed: a.name };
+      }
+      if (a.url && !LOCAL_URL.test(a.url)) throw new Refused('url must be a page on this computer: http://localhost:PORT/... or http://127.0.0.1:PORT/...');
+      if (a.goalId && !store.read('goals').some((g) => g.id === a.goalId)) throw new Refused(`No goal ${a.goalId}.`);
+      const old = addons[i];
+      if (!old && !a.title) throw new Refused('A new add-on needs a title.');
+      if (!old && !a.url && !a.start && !a.waiting) throw new Refused('Give at least a url, a start command or a waiting command, or there is nothing to show.');
+      const next = { ...(old || { created: now() }), name: a.name };
+      for (const k of ['title', 'purpose', 'goalId', 'url', 'start', 'waiting']) if (a[k] !== undefined) next[k] = a[k] || undefined;
+      const changed = !old || ['url', 'start', 'waiting'].some((k) => (old[k] || '') !== (next[k] || ''));
+      if (changed) { delete next.sig; delete next.approvedAt; }
+      if (i < 0) addons.push(next); else addons[i] = next;
+      store.log({ agent: a.agent, event: old ? 'addon_updated' : 'addon_added', id: a.name, text: next.title });
+      return { addon: next, approved: addonInForce(next), next: addonInForce(next) ? 'Still approved: only the title or purpose changed.' : 'Tell the founder in one line: it is on the war-room page under "Your tools", waiting for their approval. Nothing runs until they approve it.' };
+    });
+  },
+});
 
 // ── The shelf: documents the founder rereads on the page ───────────
 TOOLS.push({

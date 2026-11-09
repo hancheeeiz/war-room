@@ -4,7 +4,8 @@ import { starterRules } from './starter-rules.mjs';
 import { now } from './store.mjs';
 import { recipes, runStatus, stoppedWorkers } from './agents.mjs';
 import { markdownToHtml, readShelfItem } from './shelf.mjs';
-import { studyProgress } from './tools.mjs';
+import { ensureToday, studyProgress } from './tools.mjs';
+import { addonList } from './addons.mjs';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
@@ -15,11 +16,16 @@ function capped(rows, max = 10) {
   return `${rows.slice(0, max).join('')}<details class="more"><summary>Show ${rows.length - max} more</summary>${rows.slice(max).join('')}</details>`;
 }
 
+const shortDay = (d) => new Date(`${d}T12:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+
 function levelRows(g) {
+  const day = now().slice(0, 10);
   return (g.milestones || []).map((m, i) => {
     const done = m.checks.filter((c) => c.verified).length;
     const p = pct(done, m.checks.length);
-    return `<div class="lv ${p === 100 ? 'won' : ''}"><span class="lv-id">L${i + 1}</span><div class="xp"><span style="width:${p}%"></span><em>${esc(m.title)}</em></div><span class="lv-n">${done}/${m.checks.length}</span></div>`;
+    const late = m.due && p < 100 && day > m.due;
+    const when = m.due ? `<p class="lv-due${late ? ' late' : ''}">${late ? `⚠ Behind · was due ${shortDay(m.due)}` : `${m.start ? `${shortDay(m.start)} → ` : 'Due '}${shortDay(m.due)}`}</p>` : '<p class="lv-due late">No date set</p>';
+    return `<div class="lv ${p === 100 ? 'won' : ''}${late ? ' behind' : ''}"><span class="lv-id">L${i + 1}</span><div class="xp"><span style="width:${p}%"></span><em>${esc(m.title)}</em></div><span class="lv-n">${done}/${m.checks.length}</span></div>${p === 100 ? '' : when}`;
   }).join('');
 }
 
@@ -36,6 +42,7 @@ function eventText(e) {
 }
 
 export function renderDashboard(store, { live = false } = {}) {
+  try { ensureToday(store); } catch {}
   const cfg = store.config();
   const goals = store.read('goals').filter((g) => g.status !== 'dropped');
   const tasks = store.read('tasks');
@@ -66,7 +73,7 @@ export function renderDashboard(store, { live = false } = {}) {
     goalPct = pct(done, checks.length);
     const items = (main.daily?.[today] || []).map((it) => {
       const t = tasks.find((x) => x.id === it.taskId);
-      return { text: it.text, taskId: it.taskId, ok: t ? t.status === 'verified' : !!it.done };
+      return { text: it.text, taskId: it.taskId, at: it.at, carried: it.carried, ok: t ? t.status === 'verified' : !!it.done };
     });
     todayTotal = items.length;
     todayDone = items.filter((i) => i.ok).length;
@@ -81,8 +88,9 @@ export function renderDashboard(store, { live = false } = {}) {
     </section>`;
     todayPanel = `<section class="card today-panel"><div class="card-h"><h2>Today</h2><span class="meta">${todayDone}/${todayTotal} done</span></div>
       <ul class="daily">${items.map((i, n) => (i.taskId
-        ? `<li class="${i.ok ? 'ok' : ''}" title="Ticks itself when task ${esc(i.taskId)} is verified"><span class="box">${i.ok ? '✓' : ''}</span><span>${esc(i.text)} <span class="meta">${esc(i.taskId)}</span></span></li>`
-        : `<li class="${i.ok ? 'ok' : ''}"><button type="button" class="box tick" data-tick="${n}" data-goal="${esc(main.id)}" data-text="${esc(i.text)}" data-done="${i.ok ? 1 : 0}" aria-label="${i.ok ? 'Mark not done' : 'Mark done'}: ${esc(i.text)}">${i.ok ? '✓' : ''}</button><span>${esc(i.text)}</span></li>`)).join('') || '<li class="none">No daily goals set yet.</li>'}</ul>
+        ? `<li class="${i.ok ? 'ok' : ''}" title="Ticks itself when task ${esc(i.taskId)} is verified"><span class="box">${i.ok ? '✓' : ''}</span><span>${i.at ? `<b class="at">${esc(i.at)}</b> ` : ''}${esc(i.text)} <span class="meta">${esc(i.taskId)}${i.carried ? ' · from yesterday' : ''}</span></span></li>`
+        : `<li class="${i.ok ? 'ok' : ''}"><button type="button" class="box tick" data-tick="${n}" data-goal="${esc(main.id)}" data-text="${esc(i.text)}" data-done="${i.ok ? 1 : 0}" aria-label="${i.ok ? 'Mark not done' : 'Mark done'}: ${esc(i.text)}">${i.ok ? '✓' : ''}</button><span>${i.at ? `<b class="at">${esc(i.at)}</b> ` : ''}${esc(i.text)}${i.carried ? ' <span class="meta">from yesterday</span>' : ''}</span></li>`)).join('') || '<li class="none">Nothing left in the plan for today.</li>'}</ul>
+      ${main.dailyAuto?.[today] ? '<p class="note">Made by the war room from your plan this morning.</p>' : ''}
       ${items.some((i) => !i.taskId) ? '<p class="note">Tap a box to tick a goal yourself. Goals linked to a task tick themselves once the task is checked.</p>' : ''}<span class="note out" id="tickOut"></span></section>`;
   }
 
@@ -140,6 +148,22 @@ export function renderDashboard(store, { live = false } = {}) {
     <p class="why">It starts working on it in the background right away — you do not need to open a chat.</p></section>`;
 
   const recent = log.slice(0, 5).map((e) => `<div class="item"><div class="plain">${esc(eventText(e))}</div><div class="meta">${esc(e.at)} · ${esc(e.agent || 'war room')}</div></div>`).join('');
+  // ── Your tools: add-ons the commander built for this founder; each needs the founder's approval first ──
+  const addons = addonList(store);
+  const addonRow = (a) => {
+    const w = a.waitingNow;
+    const head = `<div class="ad-h"><b>${esc(a.title || a.name)}</b>${a.active && w && !w.error ? `<span class="pill ${w.items.length ? 'warn' : ''}">${w.items.length ? `${w.items.length} waiting` : 'nothing waiting'}</span>` : ''}</div>${a.purpose ? `<p class="note">${esc(a.purpose)}</p>` : ''}`;
+    if (!a.active) {
+      return `<li class="addon">${head}<p class="note">${a.off ? 'Switched off.' : 'Built by the commander. Read what it runs, then approve it:'}</p>
+        ${['url', 'start', 'waiting'].filter((k) => a[k]).map((k) => `<p class="ad-cmd"><span class="meta">${{ url: 'Opens', start: 'Starts with', waiting: 'Checks with' }[k]}</span> <code>${esc(a[k])}</code></p>`).join('')}
+        <button type="button" class="send" data-addon="${esc(a.name)}" data-on="1">${a.off ? 'Switch on' : 'Approve'}</button><span class="note out" id="adOut-${esc(a.name)}"></span></li>`;
+    }
+    return `<li class="addon">${head}
+      ${w?.error ? `<p class="note late">Its check failed: ${esc(w.error)}</p>` : ''}
+      ${w?.items.length ? `<ul class="ad-wait">${w.items.slice(0, 3).map((l) => `<li>${esc(l.slice(0, 140))}</li>`).join('')}${w.items.length > 3 ? `<li class="meta">and ${w.items.length - 3} more</li>` : ''}</ul>` : ''}
+      <div class="ad-act">${a.url ? `<a class="send" href="${esc(a.url)}" target="_blank" rel="noopener">Open</a>` : ''}<button type="button" class="link" data-addon="${esc(a.name)}" data-on="0">Switch off</button><span class="note out" id="adOut-${esc(a.name)}"></span></div></li>`;
+  };
+  const toolsCard = addons.length ? `<section class="card"><div class="card-h"><h2>Your tools</h2><span class="meta">${addons.length}</span></div><ul class="addons">${addons.map(addonRow).join('')}</ul>${addons.some((a) => a.url) ? '<p class="note">Open works on this computer; the phone link cannot reach these pages.</p>' : ''}</section>` : '';
   const recentCard = `<section class="card"><div class="card-h"><h2>Recent</h2><span class="meta">last 5</span></div>${recent || '<p class="note">Nothing yet.</p>'}<button class="link" type="button" data-go="details">See everything in Details →</button></section>`;
 
   const approvalCards = [
@@ -173,7 +197,7 @@ export function renderDashboard(store, { live = false } = {}) {
   const mainDebate = latestDebate && (latestDebate.status !== 'done' || String(latestDebate.finished || latestDebate.created).startsWith(today)) ? debateCard(latestDebate, false) : '';
 
   const mainPane = `${approveCard}
-    <div class="grid g-main"><div class="col">${talk}${board}</div><div class="col">${goalPanel}${todayPanel}${recentCard}</div></div>
+    <div class="grid g-main"><div class="col">${talk}${board}</div><div class="col">${goalPanel}${todayPanel}${toolsCard}${recentCard}</div></div>
     ${mainDebate}`;
 
   // ── DETAILS TAB ─────────────────────────────────────
@@ -357,6 +381,8 @@ ul.daily li{display:flex;gap:10px;align-items:flex-start;padding:6px 0}ul.daily 
 .xp{position:relative;height:20px;border:1px solid #3a2f66;background:#17142a;border-radius:3px;overflow:hidden}.xp span{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,#6d4fd1,#a184f2)}
 .xp em{position:relative;display:block;padding:0 8px;line-height:18px;font-style:normal;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#eeeaf6}
 .send.done{background:var(--ok)}.study .xp span{background:linear-gradient(90deg,#2f7fd1,#6fb6f2)}
+.addons{list-style:none;margin:0;padding:0}.addon{padding:12px 0;border-top:1px solid var(--line,#2a2a38)}.addon:first-child{border-top:0;padding-top:4px}.ad-h{display:flex;justify-content:space-between;gap:8px;align-items:center}.ad-h b{font-size:14px}.pill{font-size:11px;padding:2px 8px;border-radius:99px;background:#24242e;color:var(--muted);white-space:nowrap}.pill.warn{background:#3a2a10;color:#ffc46b}.ad-cmd{margin:4px 0;font-size:12px;overflow-wrap:anywhere}.ad-cmd code{font-size:11.5px}.ad-wait{margin:6px 0;padding-left:18px;font-size:12.5px;color:var(--muted)}.ad-wait li{margin:2px 0;overflow-wrap:anywhere}.ad-act{display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap}a.send{text-decoration:none;display:inline-block}.note.late{color:#ff8a8a}
+.lv-due{margin:-2px 0 6px 34px;font-size:11px;color:var(--muted)}.lv-due.late{color:#ff8a8a;font-weight:600}.lv.behind .xp{box-shadow:inset 0 0 0 1px #ff6b6b}.daily .at{color:#a99be0;font-variant-numeric:tabular-nums}
 .lv.won .xp span{background:linear-gradient(90deg,#1f8a54,#5ac38a)}.lv.won .lv-n{color:var(--ok)}
 .party{display:grid;grid-template-columns:1fr 1fr;gap:8px}@media (max-width:420px){.party{grid-template-columns:1fr}}
 .hud-card{border:1px solid #3a2f66;background:#17142a;border-radius:8px;padding:8px 10px;font-size:12px;min-width:0}.hud-card.working{border-color:var(--ok)}
@@ -393,6 +419,8 @@ document.querySelectorAll('[data-close-book]').forEach(b=>b.onclick=closeBook);
 document.querySelectorAll('.tabs [data-go]').forEach(b=>b.addEventListener('click',()=>{if(b.dataset.go!=='shelf')closeBook()}));
 document.querySelectorAll('[data-read]').forEach(b=>b.onclick=async()=>{const read=b.dataset.was!=='1';b.disabled=true;
   if(await post('/api/read',{id:b.dataset.read,read},document.getElementById('readOut-'+b.dataset.read),'war-room read --note '+b.dataset.read+(read?'':' --undo')))setTimeout(()=>location.reload(),500);else b.disabled=false});
+document.querySelectorAll('[data-addon]').forEach(b=>b.onclick=async()=>{const approve=b.dataset.on==="1";b.disabled=true;
+  if(await post('/api/addon',{name:b.dataset.addon,approve},document.getElementById('adOut-'+b.dataset.addon),'war-room addon --name '+b.dataset.addon+(approve?' --approve':' --off')))setTimeout(()=>location.reload(),500);else b.disabled=false});
 if(location.hash.startsWith('#shelf/'))openBook(decodeURIComponent(location.hash.slice(7)));
 document.querySelectorAll('[data-fill]').forEach(b=>b.onclick=()=>{b.closest('.q').querySelector('textarea').value=b.dataset.fill});
 const shq=s=>"'"+s.replace(/'/g,"'\\\\''")+"'";

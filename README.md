@@ -21,7 +21,11 @@ Everything else (starting helper chats, the page, connecting other agents) the c
 
 - **Remembers.** Every preference, decision, idea and to-do you mention is stored with its date. It reminds you of past decisions and never asks what it already knows. It never stores passwords, keys or card numbers.
 - **Judges before it plans.** A new idea gets checked for fit, cost, risk and clashes with earlier decisions, and you get a stronger version to choose from: keep / improved / later / drop. It also decides whether the goal needs you to learn anything first.
-- **Plans with honest progress.** As many milestones as the goal really needs (one for a small job, more for a big one; no set number), each with checks, a few goals per day. Bars move only when the commander has re-checked the work itself.
+- **Plans with honest progress and dates.** As many milestones as the goal really needs (one for a small job, more for a big one; no set number), each with checks and a due date (a plan without dates is refused). A milestone past its date turns red as **Behind**. Bars move only when the commander has re-checked the work itself.
+- **Today's list makes itself.** Each new day the war room builds today's list from the plan: yesterday's unfinished items carry over, then the next open checks fill it up to three. The commander can improve it and give items a time (`"at": "09:30"`). Once a day the watcher leaves one plain summary in the commander's inbox and on your phone notifier: today, behind schedule, questions waiting on you, work nobody is running. `war-room daily` does it now.
+- **The commander routes, the team works.** The commander cannot take tasks or have them handed back to it, so it never checks its own work. A task for a hired role starts that role's chat straight away (`"autoStartWorkers": false` turns this off). Each chat keeps one name: a chat that acted as the commander cannot report as "mobile", a task must be taken before it is reported, and a chat running task tools from the shell needs your yes. The brief calls out open work with nobody on it.
+- **Grows the features you want (add-ons).** Each founder wants different things: a lesson page, a reading tracker, a habit log. When the commander builds one in your project it registers it with `add_feature`. You approve it once on the page under **Your tools** (nothing it lists runs before that, and a changed command needs approving again). Then the page links to it and shows what is waiting in it, `war-room up` starts it, and the commander's brief and daily check list what waits there, so a question you left in a lesson does not go unanswered. `war-room addon` lists them in the terminal.
+- **Remembers you between chats.** Every commander chat starts with your latest decisions and preferences listed, not just the rules, so it does not ask again.
 - **Runs a team.** The commander hires a few named roles for your goal and the page draws them as a chart: you → commander → each member, with what each is doing right now. Tap a member to talk to it directly. Members can come from different companies (a Gemini reviewer checking Claude's work catches more).
 - **Works step by step when it must.** A job can wait for another ("review after build"); the next member starts by itself once the step before is checked.
 - **Starts helper chats itself.** Each helper gets only its task, its files and the rules that apply, works in the background, and reports back. One writer per file. If a helper stops at something that needs your yes, it starts again by itself once you approve.
@@ -38,6 +42,8 @@ The commander runs these for you; they are here if you like a terminal.
 war-room doctor            # what is installed, connected and running, with the next step for each gap
 war-room up --phone        # the page plus a private link for your phone (same Wi-Fi)
 war-room status            # progress bars in the terminal
+war-room daily             # make today's list and send the daily summary now
+war-room addon             # your add-ons: what they run and what waits (--name N --approve to approve one)
 war-room debate "Should we use Postgres or SQLite?"   # let the installed agents argue
 war-room connect codex     # join Codex (or gemini, cursor) to the war room; shows the change, then --yes
 war-room spawn frontend    # start a helper chat by hand
@@ -162,13 +168,14 @@ It is recorded as a decision at once and the question closes.
 | `start_worker` | commander | Start a helper chat in the background (Claude, Codex, Gemini or Cursor) |
 | `start_debate` / `debate_result` | commander / everyone | Put one question to several agents; blind answers, then they argue |
 | `request_approval` / `check_approval` | everyone | Ask the founder for a yes; check the answer (no tool can approve) |
+| `add_feature` | commander | Register a feature built for the founder (page, start command, waiting check); runs only after the founder approves it on the page |
 | `shelve` | commander | Put a Markdown file from this project on the founder's shelf to reread on the page, or take it off (`remove`) |
 
 Agent names are self-declared. The commander-only checks keep roles clear between cooperating chats; they are not a security boundary.
 
 ## Data
 
-Plain JSON in `<project>/.warroom/`: `memory.json`, `goals.json`, `tasks.json`, `team.json`, `messages.json`, `runs.json`, `debates.json`, `shelf.json` (pointers only), `log.jsonl`. A file lock keeps several agents from overwriting each other. It has no dependencies; needs Node 18+.
+Plain JSON in `<project>/.warroom/`: `memory.json`, `goals.json`, `tasks.json`, `team.json`, `messages.json`, `runs.json`, `debates.json`, `shelf.json` (pointers only), `addons.json` (approval signed on your computer), `log.jsonl`. A file lock keeps several agents from overwriting each other. It has no dependencies; needs Node 18+.
 
 ## Security
 

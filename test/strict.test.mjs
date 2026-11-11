@@ -106,6 +106,7 @@ test('today links its items to the task for that check, so they tick themselves'
   const dir = project();
   approved(dir);
   call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', checks: ['page builds'], due: day(9) }] });
+  call(dir, 'hire', { agent: 'commander', name: 'builder', role: 'builder' });
   call(dir, 'create_task', { agent: 'commander', goalId: 'g1', checkId: 'g1.m1.c1', title: 'Build page', assignTo: 'builder', doneCheck: 'npm run build' });
   const goals = read(dir, 'goals');
   delete goals[0].daily;
@@ -118,6 +119,7 @@ test('the commander never does the work: no tasks to itself, none handed back to
   approved(dir);
   call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', checks: ['c'], due: day(9) }] });
   assert.match(call(dir, 'create_task', { agent: 'commander', goalId: 'g1', title: 'Do it myself', assignTo: 'commander', doneCheck: 'x' }).text, /does not take tasks/);
+  call(dir, 'hire', { agent: 'commander', name: 'builder', role: 'builder' });
   call(dir, 'create_task', { agent: 'commander', goalId: 'g1', title: 'Build', assignTo: 'builder', doneCheck: 'x' });
   assert.match(call(dir, 'reassign_task', { agent: 'commander', taskId: 't1', assignTo: 'commander', reason: 'quicker' }).text, /does not take tasks/);
   // A task still on the commander from an older war room is called out in its brief.
@@ -135,8 +137,11 @@ test('work starts by itself: a task for a hired role starts its chat; open work 
   const hired = call(dir, 'create_task', { agent: 'commander', goalId: 'g1', checkId: 'g1.m1.c1', title: 'Draw home', assignTo: 'designer', doneCheck: 'png' }).json();
   assert.match(hired.worker, /Started designer/);
   await until(() => /^designer\|.*--model sonnet/m.test(calls()));
-  const loose = call(dir, 'create_task', { agent: 'commander', goalId: 'g1', checkId: 'g1.m1.c2', title: 'Wire API', assignTo: 'backend', doneCheck: 'curl' }).json();
-  assert.match(loose.worker, /not on the team/);
+  // Work for a name that is not on the team is refused, so nothing sits where no worker can be started.
+  assert.match(call(dir, 'create_task', { agent: 'commander', goalId: 'g1', checkId: 'g1.m1.c2', title: 'Wire API', assignTo: 'backend', doneCheck: 'curl' }).text, /not on the team\. hire it first/);
+  write(dir, 'config', { ...read(dir, 'config'), autoStartWorkers: false });
+  call(dir, 'hire', { agent: 'commander', name: 'backend', role: 'backend' });
+  call(dir, 'create_task', { agent: 'commander', goalId: 'g1', checkId: 'g1.m1.c2', title: 'Wire API', assignTo: 'backend', doneCheck: 'curl' });
   assert.match(call(dir, 'war_room_brief', { agent: 'commander' }).text, /## Open work with nobody on it[\s\S]*backend: t2/);
 });
 
@@ -144,6 +149,7 @@ test('a report needs the task taken first: one chat cannot report work under sev
   const dir = project();
   approved(dir);
   call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', checks: ['c'], due: day(9) }] });
+  call(dir, 'hire', { agent: 'commander', name: 'mobile', role: 'mobile' });
   call(dir, 'create_task', { agent: 'commander', goalId: 'g1', title: 'Build', assignTo: 'mobile', doneCheck: 'x' });
   assert.match(call(dir, 'report_done', { agent: 'mobile', taskId: 't1', summary: 's', evidence: 'e' }).text, /Take it with get_task_packet first/);
   call(dir, 'get_task_packet', { agent: 'mobile' });
@@ -165,6 +171,7 @@ test('daily check: makes today\'s list and leaves one plain summary in the comma
   const dir = project();
   approved(dir);
   call(dir, 'set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'Late', win: 'w', checks: ['c'], due: day(-1) }] });
+  call(dir, 'hire', { agent: 'commander', name: 'backend', role: 'backend' });
   call(dir, 'create_task', { agent: 'commander', goalId: 'g1', title: 'Build', assignTo: 'backend', doneCheck: 'x' });
   call(dir, 'ask_founder', { agent: 'commander', question: 'Which banner colour for launch?', suggested: 'violet' });
   const out = run(dir, 'daily').stdout;

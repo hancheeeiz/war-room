@@ -25,6 +25,8 @@ const env = { ...process.env, HOME, WAR_ROOM_HOME: path.join(HOME, '.config', 'w
 function project() {
   const dir = tmp('war-room-agents-');
   spawnSync(process.execPath, [CLI, 'init', '--project', 'demo'], { cwd: dir, env });
+  // These tests hand work to chat names that were never hired; team-only hand-out is tested in engine.test.mjs.
+  const cf = path.join(dir, '.warroom', 'config.json'); fs.writeFileSync(cf, JSON.stringify({ ...JSON.parse(fs.readFileSync(cf, 'utf8')), teamOnly: false }));
   return dir;
 }
 const run = (dir, ...args) => spawnSync(process.execPath, [CLI, ...args], { cwd: dir, env: { ...env, WAR_ROOM_DIR: dir }, encoding: 'utf8' });
@@ -126,7 +128,8 @@ test('up: one command starts the page and the watcher, and says so if it is alre
   const dir = project();
   const port = 4900 + Math.floor(Math.random() * 500);
   const proc = spawn(process.execPath, [CLI, 'up', '--no-open', '--port', String(port)], { cwd: dir, env: { ...env, WAR_ROOM_DIR: dir } });
-  const up = await until(() => { try { return JSON.parse(fs.readFileSync(path.join(dir, '.warroom/up.json'), 'utf8')); } catch { return null; } });
+  // up.json is claimed first (pid only) and gets the port once the page listens.
+  const up = await until(() => { try { const u = JSON.parse(fs.readFileSync(path.join(dir, '.warroom/up.json'), 'utf8')); return u.port ? u : null; } catch { return null; } });
   assert.equal(up.port, port);
   const status = await new Promise((resolve) => http.get({ host: '127.0.0.1', port, path: '/' }, (r) => { r.resume(); resolve(r.statusCode); }));
   assert.equal(status, 200);

@@ -14,6 +14,8 @@ const CLI = path.join(ROOT, 'bin/war-room.mjs');
 function tmpProject() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'war-room-test-'));
   spawnSync('node', [CLI, 'init', '--project', 'demo', '--commander', 'commander'], { cwd: dir });
+  // These tests hand work to chat names that were never hired; team-only hand-out is tested in engine.test.mjs.
+  const cf = path.join(dir, '.warroom', 'config.json'); fs.writeFileSync(cf, JSON.stringify({ ...JSON.parse(fs.readFileSync(cf, 'utf8')), teamOnly: false }));
   return dir;
 }
 

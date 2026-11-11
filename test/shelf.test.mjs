@@ -35,6 +35,8 @@ const 加入 = (帳, e) => [...帳, e]; // <b>not bold</b>
 function tmpProject() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'war-room-shelf-'));
   spawnSync(process.execPath, [CLI, 'init', '--project', 'demo', '--commander', 'commander'], { cwd: dir });
+  // These tests hand work to chat names that were never hired; team-only hand-out is tested in engine.test.mjs.
+  const cf = path.join(dir, '.warroom', 'config.json'); fs.writeFileSync(cf, JSON.stringify({ ...JSON.parse(fs.readFileSync(cf, 'utf8')), teamOnly: false }));
   fs.mkdirSync(path.join(dir, 'docs/學習'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'docs/學習/01-事件溯源.md'), NOTE);
   return dir;

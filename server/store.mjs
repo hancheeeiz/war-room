@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const FILES = { memory: [], goals: [], tasks: [], messages: [], approvals: [], runs: [], debates: [], team: [], shelf: [], addons: [] };
+const FILES = { memory: [], goals: [], tasks: [], messages: [], approvals: [], runs: [], debates: [], team: [], shelf: [], addons: [], duty: {}, progress: {} };
 
 export const MEMORY_KINDS = ['rule', 'never', 'decision', 'pref', 'fact', 'problem', 'idea', 'todo', 'question'];
 
@@ -100,7 +100,8 @@ export class Store {
     const f = path.join(this.root, 'log.jsonl');
     if (!fs.existsSync(f)) return [];
     const lines = fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean);
-    return lines.slice(-limit).map((l) => JSON.parse(l));
+    // One line half-written by two processes at once must not stop everything that reads the log.
+    return lines.slice(-limit).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
   }
 
   locked(fn) {

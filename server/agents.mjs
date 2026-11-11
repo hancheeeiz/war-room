@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nextId, now, userConfig } from './store.mjs';
+import { mayStartCli } from './relay.mjs';
 
 export const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const CLI = path.join(PLUGIN_ROOT, 'bin', 'war-room.mjs');
@@ -31,13 +32,34 @@ export function recipes() {
   return out;
 }
 
-export function which(bin) {
-  if (bin.includes('/')) return fs.existsSync(bin) ? bin : null;
-  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
-    const f = path.join(dir, bin);
-    try { if (fs.statSync(f).isFile()) return f; } catch {}
+// Finds a command on PATH. On Windows, also tries PATHEXT (claude.cmd, codex.cmd, node.exe).
+export function which(bin, { platform = process.platform, env = process.env } = {}) {
+  const win = platform === 'win32';
+  // npm puts claude, claude.cmd and claude.ps1 side by side; the bare one is a shell script Windows cannot run, so the
+  // PATHEXT names come first.
+  const exts = win ? [...(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map((e) => e.toLowerCase()), ''] : [''];
+  const isFile = (f) => { try { return fs.statSync(f).isFile(); } catch { return false; } };
+  if (bin.includes('/') || (win && bin.includes('\\'))) return exts.map((e) => bin + e).find(isFile) || null;
+  for (const dir of (env.PATH || env.Path || '').split(win ? ';' : ':').filter(Boolean)) {
+    for (const e of exts) { const f = path.join(dir, bin + e); if (isFile(f)) return f; }
   }
   return null;
+}
+
+// How to start a command. Windows runs .cmd/.bat shims (how npm installs claude and codex) only through cmd.exe, and
+// cmd.exe treats quotes and % inside text specially, so text arguments lose those two characters there.
+export function launchSpec(bin, args, { platform = process.platform, env = process.env } = {}) {
+  if (platform !== 'win32' || !/\.(cmd|bat)$/i.test(bin)) return { bin, args, opts: { windowsHide: true } };
+  const q = (a) => `"${String(a).replace(/\r?\n/g, ' ').replace(/"/g, "'").replace(/%/g, ' percent').replace(/(\\+)$/, '$1$1')}"`;
+  return { bin: env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${[bin, ...args].map(q).join(' ')}"`], opts: { windowsVerbatimArguments: true, windowsHide: true } };
+}
+
+// A command line for the founder's own commands (add-ons, the notifier): sh on Mac and Linux, cmd.exe on Windows.
+export function shellSpec(cmd, { platform = process.platform, env = process.env } = {}) {
+  return platform === 'win32'
+    // With /s, cmd.exe strips the first and last quote of the line: wrap the whole command so its own quotes survive.
+    ? { bin: env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', `"${cmd}"`], opts: { windowsVerbatimArguments: true, windowsHide: true } }
+    : { bin: '/bin/sh', args: ['-c', cmd], opts: {} };
 }
 
 export function installed() {
@@ -107,7 +129,11 @@ export function startWorker(store, { name, agent = 'claude', model, prompt }) {
   fs.mkdirSync(path.join(store.root, 'runs'), { recursive: true });
   const log = path.join(store.root, 'runs', `${name}-${Date.now()}.log`);
   const fd = fs.openSync(log, 'a');
-  const child = spawn(cmd.bin, cmd.args, { cwd: project, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, WAR_ROOM_AGENT: name, WAR_ROOM_DIR: project } });
+  if (!which(cmd.bin)) { fs.closeSync(fd); throw new Error(`${agent} is not installed on this computer (no "${cmd.bin}" command found).`); }
+  const ls = launchSpec(cmd.bin, cmd.args);
+  const child = spawn(ls.bin, ls.args, { ...ls.opts, cwd: project, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, WAR_ROOM_AGENT: name, WAR_ROOM_DIR: project } });
+  // A start that fails later must not take the page and watcher down with it.
+  child.on('error', (e) => { try { fs.appendFileSync(log, `\nCould not start: ${e.message}\n`); } catch {} });
   child.unref();
   fs.closeSync(fd);
   return store.update('runs', (runs) => {
@@ -122,7 +148,7 @@ export function startWorker(store, { name, agent = 'claude', model, prompt }) {
 // (it reads every open message, so one run is enough). Off with "autoCommander": false in .warroom/config.json.
 export function wakeCommander(store) {
   const cfg = store.config();
-  if (cfg.autoCommander === false || !which(recipes().claude.bin)) return null;
+  if (cfg.autoCommander === false || !which(recipes().claude.bin) || !mayStartCli(store, cfg.commander)) return null;
   const last = store.read('runs').filter((r) => r.name === cfg.commander).pop();
   if (last && runStatus(last) === 'running') return null;
   return startWorker(store, { name: cfg.commander, agent: 'claude', model: cfg.commanderModel, prompt: commanderPrompt(cfg.commander) });
@@ -131,7 +157,7 @@ export function wakeCommander(store) {
 // The founder wrote to one team member directly: start it so it reads the message (if it is not already running).
 export function wakeMember(store, name) {
   const member = store.read('team').find((m) => m.name === name);
-  if (!member) return null;
+  if (!member || !mayStartCli(store, name)) return null;
   const last = store.read('runs').filter((r) => r.name === name).pop();
   if (last && runStatus(last) === 'running') return null;
   return startWorker(store, { name, agent: member.use || 'claude', model: member.model, prompt: `${workerPrompt(name)} The founder sent you a message: read_messages first, do what it asks if it fits your task, and reply by closing it with a short plain answer.` });
@@ -151,7 +177,7 @@ export function resumeAfterApproval(store, ap) {
   if (ap.status !== 'approved' || ap.type === 'rule') return null;
   const runs = store.read('runs').filter((r) => r.name === ap.agent);
   const last = runs[runs.length - 1];
-  if (!last || runStatus(last) === 'running') return null;
+  if (!last || runStatus(last) === 'running' || !mayStartCli(store, ap.agent)) return null;
   if (!store.read('tasks').some((t) => t.agent === ap.agent && ['claimed', 'open', 'rejected'].includes(t.status))) return null;
   return startWorker(store, { name: last.name, agent: last.agent, model: last.model });
 }
@@ -203,7 +229,8 @@ function ask(seat, prompt, cwd, timeoutMs) {
     let cmd;
     try { cmd = commandFor(seat, 'ask', prompt); } catch (e) { return resolve({ ok: false, text: e.message, ms: 0 }); }
     const t = Date.now();
-    execFile(cmd.bin, cmd.args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, WAR_ROOM_AGENT: `debate-${seat.seat}` } }, (err, stdout, stderr) => {
+    const ls = launchSpec(cmd.bin, cmd.args);
+    execFile(ls.bin, ls.args, { ...ls.opts, cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env: { ...process.env, WAR_ROOM_AGENT: `debate-${seat.seat}` } }, (err, stdout, stderr) => {
       const text = String(stdout || '').trim();
       if (err && !text) return resolve({ ok: false, text: `Failed: ${err.killed ? 'timed out' : whyFailed(String(stderr)) || err.message}`.slice(0, 500), ms: Date.now() - t });
       resolve({ ok: true, text: text.slice(0, 12000), final: text.match(FINAL)?.[1]?.trim(), ms: Date.now() - t });
@@ -265,7 +292,9 @@ export const CONNECT = {
 
 const NOTE = `<!-- war-room -->
 ## War room
-This project has a war room. At the start of every session call the war-room tool \`war_room_brief\` with your agent name, then \`get_task_packet\`. Finish with \`report_done\` and your evidence. Never push, deploy, publish, delete data or spend money without the founder's yes.
+This project has a war room. At the start of every session call the war-room tool \`war_room_brief\` with your agent name, then \`get_task_packet\`. Finish with \`report_done\` and your evidence (and \`files\` you made). Never push, deploy, publish, delete data or spend money without the founder's yes.
+
+When the founder says "stand by" (or 待命) with a name, you are that team member: call \`wait_for_work\` with that name (and \`app\`, e.g. "Codex app"). Do what it returns (\`progress\` one line at each step, \`report_done\` with files when done), then call \`wait_for_work\` again. Keep going until the founder says stop. Work passes between apps this way; never ask the founder to copy text across.
 <!-- /war-room -->
 `;
 
@@ -279,8 +308,12 @@ export function connectAgent(agent, { project, write = false } = {}) {
   let text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
   if (agent === 'codex') {
     if (!/\[mcp_servers\.war-room\]/.test(text)) {
-      text += `${text && !text.endsWith('\n') ? '\n' : ''}\n[mcp_servers.war-room]\ncommand = ${JSON.stringify(server.command)}\nargs = ${JSON.stringify(server.args)}\n`;
+      text += `${text && !text.endsWith('\n') ? '\n' : ''}\n[mcp_servers.war-room]\ncommand = ${JSON.stringify(server.command)}\nargs = ${JSON.stringify(server.args)}\ntool_timeout_sec = 150\n`;
       changes.push(`add the war-room server to ${file}`);
+    } else if (!/^\s*tool_timeout_sec\s*=/m.test(text.split(/\r?\n(?=\s*\[)/).find((sec) => /^\s*\[mcp_servers\.war-room\]/.test(sec)) || '')) {
+      // Standing by waits up to 110 s in one call; Codex's default limit is 60 s.
+      text = text.replace(/\[mcp_servers\.war-room\](\r?\n)/, '[mcp_servers.war-room]$1tool_timeout_sec = 150$1');
+      changes.push(`let war-room calls wait up to 150 s in ${file} (for standing by)`);
     }
   } else {
     let cfg = {};
@@ -293,12 +326,16 @@ export function connectAgent(agent, { project, write = false } = {}) {
   }
   const notes = project ? path.join(project, c.notes) : null;
   const notesText = notes && fs.existsSync(notes) ? fs.readFileSync(notes, 'utf8') : '';
-  if (notes && !notesText.includes('<!-- war-room -->')) changes.push(`add a short war-room note to ${notes}`);
+  const oldNote = notesText.match(/<!-- war-room -->[\s\S]*?<!-- \/war-room -->\n?/)?.[0];
+  if (notes && !oldNote) changes.push(`add a short war-room note to ${notes}`);
+  else if (notes && oldNote !== NOTE) changes.push(`update the war-room note in ${notes}`);
   if (write && changes.length) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.before-war-room`);
+    // Keep the very first original: a later connect must not overwrite it with an already-changed copy.
+    if (fs.existsSync(file) && !fs.existsSync(`${file}.before-war-room`)) fs.copyFileSync(file, `${file}.before-war-room`);
     fs.writeFileSync(file, text);
-    if (notes && !notesText.includes('<!-- war-room -->')) fs.writeFileSync(notes, `${notesText}${notesText && !notesText.endsWith('\n') ? '\n' : ''}${notesText ? '\n' : ''}${NOTE}`);
+    if (notes && !oldNote) fs.writeFileSync(notes, `${notesText}${notesText && !notesText.endsWith('\n') ? '\n' : ''}${notesText ? '\n' : ''}${NOTE}`);
+    else if (notes && oldNote !== NOTE) fs.writeFileSync(notes, notesText.replace(oldNote, NOTE));
   }
   return { file, changes, installed: !!which(recipes()[agent].bin) };
 }

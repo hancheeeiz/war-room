@@ -5,7 +5,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
 import { addonList, approveAddon, startAddons } from '../server/addons.mjs';
-import { resumeAfterApproval, wakeCommander, wakeMember } from '../server/agents.mjs';
+import { LABEL, enginePidFile, enginePath, engineRunning, loginItem, morningRun, vbsText, plistPath, plistText, register, registered, sweepWork, tidyInbox, unregister } from '../server/engine.mjs';
+import { resumeAfterApproval, shellSpec, wakeCommander, wakeMember } from '../server/agents.mjs';
 import { STARTER_RULES, starterRules } from '../server/starter-rules.mjs';
 import { autoRemember, brief, callTool, consumeApproval, dailyCheck, requestApproval, resolveApproval, markRead, ruleInForce, tickToday } from '../server/tools.mjs';
 
@@ -33,13 +34,20 @@ const FOUNDER_YES = [
   [/api\.stripe\.com|\bstripe\s+(charges|payment|refunds|transfers|payouts)|\brevenuecat\b.*\b(grant|refund)\b/i, 'money'],
   [/\bsecurity\s+(find|add|delete)-(generic|internet)-password\b|\bgcloud\s+auth\b|\bgh\s+auth\b|\bnpm\s+(login|token)\b/, 'passwords or keys'],
   [/\|\s*(sudo\s+)?(ba|z|da|k)?sh\b|\b(ba|z)?sh\s+<\s*\(\s*(curl|wget)|\bbase64\s+(-d|--decode|-D)\b[^;&]*\|/, 'running downloaded or decoded code'],
+  [/\bwar-room(\.mjs)?\b[^|;&\n]*\bengine\s+(install|uninstall|add|remove|run)\b/, 'making something start by itself on this computer'],
+  // Each morning run is a paid commander run; the watcher starts one a day by itself.
+  [/\bwar-room(\.mjs)?\b[^|;&\n]*\bmorning\b/, 'starting an extra paid commander run'],
+  [/\bschtasks\b|\b(Register|New)-ScheduledTask\b|Start Menu[\\/]+Programs[\\/]+Startup|CurrentVersion[\\/]+Run(Once)?\b/i, 'making something start by itself on this computer'],
+  [/\blaunchctl\s+(load|bootstrap|enable|submit|kickstart)\b|Library\/LaunchAgents\b|\bcrontab\b/, 'making something start by itself on this computer'],
   [/\bclaude\s+(plugin|mcp)\s+(add|install)\b|\bnpx\s+skills?\s+add\b/, 'installing a skill, plugin or connector'],
 ];
 const RISKY_TOOL = /(deploy|publish|delete|remove|trash|send_message|send_email|charge|payment|refund|purchase|transfer)/i;
 
 function founderYesReason(input) {
   const name = input.tool_name || '';
-  const ti = input.tool_input || {};
+  // Windows paths use backslashes; the checks below are written with forward slashes.
+  const raw = input.tool_input || {};
+  const ti = { ...raw, ...(raw.file_path ? { file_path: String(raw.file_path).replace(/\\/g, '/') } : {}), ...(raw.notebook_path ? { notebook_path: String(raw.notebook_path).replace(/\\/g, '/') } : {}) };
   if (name === 'Bash') {
     const command = ti.command || '';
     // Looking at the war room's files is fine; only changing them needs the founder. A plain ls/cat/head/tail/grep/wc
@@ -50,6 +58,7 @@ function founderYesReason(input) {
   }
   if (['Write', 'Edit', 'MultiEdit'].includes(name) && /(^|\/)\.env(\.|$)|\.(pem|p8|p12|key)$/.test(ti.file_path || '')) return 'passwords or keys (secret file)';
   if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(name) && /(^|\/)(\.warroom|\.config\/war-room)\//.test(ti.file_path || ti.notebook_path || '')) return 'editing war-room approvals, memory or settings by hand';
+  if (['Write', 'Edit', 'MultiEdit'].includes(name) && /\/Library\/LaunchAgents\/|Start Menu\/Programs\/Startup\//i.test(ti.file_path || '')) return 'making something start by itself on this computer';
   if (['Write', 'Edit', 'MultiEdit'].includes(name) && /(^|\/)\.claude\/(settings[^/]*\.json|plugins\/)|(^|\/)hooks\/hooks\.json$/.test(ti.file_path || '')) return 'switching off or changing the safety guard';
   if (name.startsWith('mcp__') && !name.includes('war-room') && RISKY_TOOL.test(name.split('__').pop())) return 'an outside action (send, delete, publish or pay)';
   return null;
@@ -83,7 +92,11 @@ function checkStale(store) {
 function notify(store, message) {
   console.error(`${now()} ${message}`);
   const cmd = userConfig().notifyCommand;
-  if (cmd) execFile('/bin/sh', ['-c', `${cmd} "$1"`, 'warroom-notify', message], () => {});
+  if (!cmd) return;
+  if (process.platform === 'win32') {
+    const sh = shellSpec(`${cmd} "${String(message).replace(/["%\r\n]/g, ' ')}"`);
+    execFile(sh.bin, sh.args, sh.opts, () => {});
+  } else execFile('/bin/sh', ['-c', `${cmd} "$1"`, 'warroom-notify', message], () => {});
 }
 
 function bar(pct, width = 20) {
@@ -105,7 +118,7 @@ async function serve(opts = {}) {
   let token = (opts.keepLink ?? rest.includes('--keep-link')) && fs.existsSync(keepFile) ? fs.readFileSync(keepFile, 'utf8').trim() : crypto.randomBytes(24).toString('base64url');
   if (lan) fs.writeFileSync(keepFile, token, { mode: 0o600 });
   const tokenOk = (got) => !lan || (typeof got === 'string' && got.length === token.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(token)));
-  const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals', 'runs', 'debates', 'team', 'shelf'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
+  const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals', 'runs', 'debates', 'team', 'shelf', 'progress'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
     + (fs.existsSync(`${store.root}/log.jsonl`) ? fs.statSync(`${store.root}/log.jsonl`).mtimeMs : 0);
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
   const actions = {
@@ -217,7 +230,7 @@ async function serve(opts = {}) {
 
 // Stale-task alarm plus instant notify on war-room file changes. No polling of chats.
 async function startWatch(opts = {}) {
-  const mins = Number(opts.every ?? flag('every', 60));
+  const mins = Number(opts.every ?? flag('every', 10));
   const { renderDashboard } = await import('../server/dashboard.mjs');
   const redraw = () => { try { fs.writeFileSync(`${store.root}/dashboard.html`, renderDashboard(store)); } catch {} };
   console.log(`Watching ${store.root}: stale check every ${mins} min; file changes redraw the dashboard and notify instantly. Ctrl-C to stop.`);
@@ -225,14 +238,27 @@ async function startWatch(opts = {}) {
     const n = checkStale(store);
     if (n) notify(store, `${n} stale task(s) — alert in the commander's inbox.`);
     try { const daily = dailyCheck(store); if (daily) notify(store, daily); } catch {}
+    try { tidyInbox(store); } catch {}
+    // Hand fresh untaken work to the team, then wake the commander once each morning when something needs it.
+    try {
+      const s = sweepWork(store);
+      if (s.started.length) notify(store, `Started ${s.started.map((x) => `${x.name} for ${x.task}`).join(', ')}.`);
+    } catch (e) { console.error(`sweep: ${e.message}`); }
+    try {
+      const m = morningRun(store);
+      if (m?.run) notify(store, `Morning run: the commander is looking at ${m.need.join(', ')}.`);
+    } catch (e) { console.error(`morning run: ${e.message}`); }
     redraw();
   };
   pass();
   setInterval(pass, mins * 60e3);
   let debounce;
+  let quiet;
   fs.watch(store.root, (ev, f) => {
     if (!f?.endsWith('.json') && f !== 'log.jsonl') return;
     if (['config.json', 'lock', 'up.json'].includes(f)) return;
+    // Heartbeats and progress lines change all the time: redraw for them, but do not notify the founder.
+    if (['duty.json', 'progress.json'].includes(f)) { clearTimeout(quiet); quiet = setTimeout(redraw, 1500); return; }
     clearTimeout(debounce);
     debounce = setTimeout(() => { redraw(); notify(store, `War room updated (${f}).`); }, 1500);
   });
@@ -283,15 +309,28 @@ switch (cmd) {
     const port = Number(flag('port', 4818));
     const lan = rest.includes('--phone') || rest.includes('--lan');
     const upFile = `${store.root}/up.json`;
-    try {
-      const up = JSON.parse(fs.readFileSync(upFile, 'utf8'));
-      if (up.pid !== process.pid) { process.kill(up.pid, 0); console.log(`The war room is already up: http://127.0.0.1:${up.port}/ (process ${up.pid}). Stop it with: kill ${up.pid}`); break; }
-    } catch {}
+    // Claim the war room before starting anything, so the engine and a hand-started page never both run watchers
+    // (two watchers could start the same worker twice). Create-exclusive; a claim left by a dead process is replaced.
+    let claimed = false;
+    for (let i = 0; i < 2 && !claimed; i += 1) {
+      try { fs.writeFileSync(upFile, JSON.stringify({ pid: process.pid, starting: now() }), { flag: 'wx' }); claimed = true; } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+        let up = {};
+        try { up = JSON.parse(fs.readFileSync(upFile, 'utf8')); } catch {}
+        let alive = false;
+        try { process.kill(up.pid, 0); alive = true; } catch (err) { alive = err.code === 'EPERM'; }
+        if (alive && up.pid !== process.pid) { console.log(`The war room is already up${up.port ? `: http://127.0.0.1:${up.port}/` : ''} (process ${up.pid}). Stop it with: kill ${up.pid}`); break; }
+        fs.rmSync(upFile, { force: true });
+      }
+    }
+    if (!claimed) break;
+    process.on('exit', () => { try { if (JSON.parse(fs.readFileSync(upFile, 'utf8')).pid === process.pid) fs.rmSync(upFile); } catch {} });
     await serve({ port, lan, keepLink: rest.includes('--keep-link'), onListen: () => {
       fs.writeFileSync(upFile, JSON.stringify({ pid: process.pid, port, lan, started: now() }));
       if (!rest.includes('--no-open') && process.platform === 'darwin') execFile('open', [`http://127.0.0.1:${port}/`], () => {});
+      if (!rest.includes('--no-open') && process.platform === 'win32') execFile(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'start', '""', `http://127.0.0.1:${port}/`], { windowsHide: true }, () => {});
     } });
-    await startWatch({ every: Number(flag('every', 60)) });
+    await startWatch({ every: Number(flag('every', 10)) });
     for (const a of await startAddons(store)) console.log(`Started add-on ${a.name} (log ${a.log}).`);
     const bye = () => { try { if (JSON.parse(fs.readFileSync(upFile, 'utf8')).pid === process.pid) fs.rmSync(upFile); } catch {} process.exit(0); };
     process.on('SIGINT', bye); process.on('SIGTERM', bye);
@@ -371,6 +410,7 @@ switch (cmd) {
       const next = !have ? `not installed${name === 'claude' ? '' : ' (optional)'}` : conn === false ? `ready for debates · to take tasks too: war-room connect ${name} --yes` : 'ready';
       console.log(`  ${ok(have)} ${name.padEnd(8)} ${r.company.padEnd(16)} ${next}`);
     }
+    console.log(`Engine: ${loginItem() && fs.existsSync(loginItem().file) ? `on (${registered().length} war room(s))` : 'off → war-room engine install (keeps war rooms running when no chat is open)'}`);
     console.log(`\nNotifications: ${userConfig().notifyCommand ? 'on' : 'off (optional: set notifyCommand in ~/.config/war-room/config.json)'}`);
     break;
   }
@@ -458,6 +498,113 @@ switch (cmd) {
     if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
     await startWatch();
     break;
+  case 'engine': {
+    // The always-on engine. install/uninstall need the founder (the guard asks); run is what macOS starts at login.
+    const sub = rest[0] || 'status';
+    const dirs = () => { const d = rest.filter((x, i) => i > 0 && rest[i - 1] === '--project'); return d.length ? d : [process.env.WAR_ROOM_DIR || process.cwd()]; };
+    const engineLog = path.join(userDir(), 'engine.log');
+    try {
+      if (sub === 'add') { for (const d of dirs()) { const e = register(d); console.log(`Added ${e.dir} (page port ${e.port}).`); } break; }
+      if (sub === 'remove') { for (const d of dirs()) console.log(unregister(d) ? `Removed ${path.resolve(d)}.` : `${path.resolve(d)} was not in the list.`); break; }
+      if (sub === 'install') {
+        for (const d of dirs()) { const e = register(d); console.log(`War room: ${e.dir} (page port ${e.port})`); }
+        const cli = path.resolve(process.argv[1]);
+        if (process.platform === 'win32') {
+          const file = loginItem().file;
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, vbsText({ node: process.execPath, cli }));
+          console.log(`\nStartup script written: ${file}`);
+          if (rest.includes('--no-load')) break;
+          if (engineRunning()) { console.log('Engine is already running. It starts by itself every time you log in. Log: ' + engineLog); break; }
+          const { spawn } = await import('node:child_process');
+          spawn(process.execPath, [cli, 'engine', 'run'], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+          console.log('Engine is on: it starts now and every time you log in. Log: ' + engineLog);
+          break;
+        }
+        if (process.platform !== 'darwin') { console.log('\nStarting at login is built in for macOS and Windows. On this computer, keep this running instead (e.g. in tmux or a service): war-room engine run'); break; }
+        const file = plistPath();
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, plistText({ node: process.execPath, cli: path.resolve(process.argv[1]), pathEnv: enginePath(), log: engineLog }));
+        console.log(`\nLogin item written: ${file}`);
+        if (rest.includes('--no-load')) break;
+        const { spawnSync } = await import('node:child_process');
+        const uid = process.getuid();
+        spawnSync('launchctl', ['bootout', `gui/${uid}/${LABEL}`], { stdio: 'ignore' });
+        const r = spawnSync('launchctl', ['bootstrap', `gui/${uid}`, file], { encoding: 'utf8' });
+        console.log(r.status === 0 ? 'Engine is on: it starts now and every time you log in. Log: ' + engineLog : `Could not start it: ${(r.stderr || '').trim()}`);
+        break;
+      }
+      if (sub === 'uninstall') {
+        if (process.platform === 'darwin') {
+          const { spawnSync } = await import('node:child_process');
+          if (!rest.includes('--no-load')) spawnSync('launchctl', ['bootout', `gui/${process.getuid()}/${LABEL}`], { stdio: 'ignore' });
+          fs.rmSync(plistPath(), { force: true });
+        }
+        if (process.platform === 'win32') {
+          fs.rmSync(loginItem().file, { force: true });
+          const pid = engineRunning();
+          if (pid > 0 && !rest.includes('--no-load')) try { process.kill(pid); } catch {}
+        }
+        console.log('Engine is off. War rooms run only while a page or chat is open. (Your war rooms and their data are untouched.)');
+        break;
+      }
+      if (sub === 'run') {
+        // Supervisor: keep `war-room up` running for every registered war room. Each one's watcher does the work.
+        const { spawn } = await import('node:child_process');
+        const other = engineRunning();
+        if (other && other !== process.pid) { console.log(`${now()} the engine is already running (process ${other}).`); break; }
+        fs.writeFileSync(enginePidFile(), String(process.pid));
+        // Windows has no login-item log: write it ourselves. (macOS sends this process's output to the log already.)
+        const logFd = process.platform === 'win32' ? fs.openSync(engineLog, 'a') : null;
+        if (logFd !== null) { const w = (...a) => fs.writeSync(logFd, `${a.join(' ')}\n`); console.log = w; console.error = w; }
+        const kids = new Map();
+        const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+        const check = () => {
+          for (const p of registered()) {
+            if (!fs.existsSync(path.join(p.dir, '.warroom', 'config.json'))) continue;
+            let up = null;
+            try { up = JSON.parse(fs.readFileSync(path.join(p.dir, '.warroom', 'up.json'), 'utf8')); } catch {}
+            if (up && alive(up.pid)) continue;
+            const k = kids.get(p.dir);
+            if (k && k.exitCode === null) continue;
+            const child = spawn(process.execPath, [path.resolve(process.argv[1]), 'up', '--no-open', '--port', String(p.port)], { cwd: p.dir, env: { ...process.env, WAR_ROOM_DIR: p.dir }, stdio: ['ignore', logFd ?? 'inherit', logFd ?? 'inherit'], windowsHide: true });
+            kids.set(p.dir, child);
+            console.log(`${now()} started the war room in ${p.dir} (page http://127.0.0.1:${p.port}/)`);
+          }
+        };
+        check();
+        setInterval(check, 60e3);
+        const bye = () => { for (const k of kids.values()) try { k.kill(); } catch {} try { if (Number(fs.readFileSync(enginePidFile(), 'utf8')) === process.pid) fs.rmSync(enginePidFile()); } catch {} process.exit(0); };
+        process.on('SIGINT', bye); process.on('SIGTERM', bye);
+        console.log(`${now()} engine running for ${registered().length} war room(s).`);
+        break;
+      }
+      // status
+      const item = loginItem();
+      const on = !!item && fs.existsSync(item.file);
+      console.log(`Engine: ${on ? `on (starts at login${engineRunning() ? ', running now' : ', not running now'})` : 'off → turn it on with: war-room engine install'}`);
+      // A plugin update can move the plugin folder; the login item must point at the copy that exists now.
+      if (on && process.platform === 'win32') {
+        const [, node, cli] = fs.readFileSync(item.file, 'utf8').match(/Run """(.*?)"" ""(.*?)"" engine run/) || [];
+        if (node && !fs.existsSync(node.replace(/""/g, '"'))) console.log(`  The node it runs (${node}) is gone. Run war-room engine install again.`);
+        if (cli && cli.replace(/""/g, '"') !== path.resolve(process.argv[1])) console.log(`  It runs ${cli}, not this copy. Run war-room engine install again to point it here.`);
+      }
+      if (on && process.platform === 'darwin') {
+        const cli = /<string>engine<\/string>/.test(fs.readFileSync(plistPath(), 'utf8')) && fs.readFileSync(plistPath(), 'utf8').match(/<array><string>[^<]*<\/string><string>([^<]*)<\/string>/)?.[1];
+        const node = fs.readFileSync(plistPath(), 'utf8').match(/<array><string>([^<]*)<\/string>/)?.[1];
+        if (node && !fs.existsSync(node)) console.log(`  The node it runs (${node}) is gone. Run war-room engine install again.`);
+        if (cli && cli !== path.resolve(process.argv[1])) console.log(`  It runs ${cli}, not this copy (${path.resolve(process.argv[1])}).${fs.existsSync(cli) ? '' : ' That file is gone.'} Run war-room engine install again to point it here.`);
+      }
+      const list = registered();
+      if (!list.length) console.log('No war rooms in its list yet.');
+      for (const p of list) {
+        let up = null;
+        try { up = JSON.parse(fs.readFileSync(path.join(p.dir, '.warroom', 'up.json'), 'utf8')); process.kill(up.pid, 0); } catch { up = null; }
+        console.log(`  ${up ? '●' : '○'} ${p.dir}  http://127.0.0.1:${p.port}/${up ? '' : '  (not running)'}`);
+      }
+    } catch (e) { console.error(e.message); process.exitCode = 1; }
+    break;
+  }
   case 'addon': {
     // The founder's add-ons: list them, approve one (--approve), switch one off (--off), or start the approved ones.
     if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
@@ -477,6 +624,14 @@ switch (cmd) {
         if (a.waitingNow) console.log(a.waitingNow.error ? `  waiting check failed: ${a.waitingNow.error}` : `  ${a.waitingNow.items.length} waiting${a.waitingNow.items.slice(0, 5).map((l) => `\n    · ${l}`).join('')}`);
       }
       if (list.some((a) => !a.active && !a.off)) console.log('\nRead the commands above, then approve one with: war-room addon --name NAME --approve');
+    } catch (e) { console.error(e.message); process.exitCode = 1; }
+    break;
+  }
+  case 'morning': {
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    try {
+      const m = morningRun(store, { force: true });
+      console.log(m?.run ? `Commander started (${m.run.id}). It is looking at: ${m.need.join(', ') || 'a general check'}. Log: ${m.run.log}` : m?.skipped || 'Nothing started.');
     } catch (e) { console.error(e.message); process.exitCode = 1; }
     break;
   }
@@ -524,6 +679,9 @@ switch (cmd) {
   default:
     console.log(`war-room <command>
   up [--phone] [--no-open]        start the page and the watcher (one command)
+  engine install [--project DIR]  keep your war rooms running in the background, from login (asks first)
+  engine status | add | remove | uninstall   which war rooms the engine keeps running
+  morning                         wake the commander now to work through what needs it
   doctor                          what is installed, connected and running
   status                          progress bars in the terminal
   spawn NAME [--agent claude|codex|gemini|cursor] [--model M]   start a worker chat

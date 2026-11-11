@@ -6,6 +6,7 @@ import { recipes, runStatus, stoppedWorkers } from './agents.mjs';
 import { markdownToHtml, readShelfItem } from './shelf.mjs';
 import { ensureToday, studyProgress } from './tools.mjs';
 import { addonList } from './addons.mjs';
+import { chains, dutyOf, isReady, stepState } from './relay.mjs';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
@@ -99,15 +100,21 @@ export function renderDashboard(store, { live = false } = {}) {
   const stopped = new Set(stoppedWorkers(store).map((r) => r.name));
   const names = [...new Set([...team.map((m) => m.name), ...tasks.map((t) => t.agent).filter((a) => a && a !== cfg.commander)])];
   const company = (agent) => recipes()[agent]?.company || '';
+  const ago = (msAgo) => (msAgo < 90e3 ? 'just now' : msAgo < 3600e3 ? `${Math.round(msAgo / 60e3)} min ago` : `${Math.round(msAgo / 3600e3)} h ago`);
   const memberState = (name) => {
     const ts = tasks.filter((t) => t.agent === name);
+    const duty = dutyOf(store, name);
+    const held = ts.find((t) => t.status === 'claimed');
+    if (duty && held) return ['working', `Working in ${duty.via || 'its app'}`, held];
+    if (duty) return ['duty', `On duty in ${duty.via || 'its app'} · waiting for work`, ts.find((t) => ['open', 'rejected', 'reported'].includes(t.status))];
     const open = ts.find((t) => ['claimed', 'open', 'rejected', 'reported'].includes(t.status));
     const run = runs.filter((r) => r.name === name).pop();
     if (run && runStatus(run) === 'running') return ['working', 'Working', open];
     if (open?.status === 'reported') return ['check', 'Done, being checked', open];
     if (open?.status === 'claimed') return ['working', 'Working on it', open];
     if (stopped.has(name)) return ['stopped', 'Stopped — the commander looks at why', open];
-    if (open?.status === 'open' && open.after && tasks.find((t) => t.id === open.after)?.status !== 'verified') return ['wait', `Waits for step ${open.after}`, open];
+    if (open?.status === 'open' && !isReady(open, tasks)) return ['wait', `Waits for step ${open.after}`, open];
+    if (team.find((x) => x.name === name)?.use === 'app' && open) return ['ready', 'Has work: open its app and say "stand by"', open];
     if (open) return ['ready', 'Has work, not started', open];
     if (ts.length && ts.every((t) => t.status === 'verified')) return ['done', 'All done', null];
     return ['idle', 'Free', null];
@@ -124,6 +131,24 @@ export function renderDashboard(store, { live = false } = {}) {
       ${task ? `<span class="n-task">${task.after ? `<b>${esc(task.id)}</b> after ${esc(task.after)} · ` : `<b>${esc(task.id)}</b> · `}${esc(task.title)}</span>` : m.does ? `<span class="n-task">${esc(m.does)}</span>` : ''}
       <span class="n-foot">${done} done</span></button>`;
   }).join('');
+  // ── The step board: every chain of steps still running, each step with who has it and where it is now ──
+  const progress = store.read('progress');
+  const stepBox = (t) => {
+    const [state, label] = stepState(t, tasks);
+    const duty = dutyOf(store, t.agent);
+    const m = team.find((x) => x.name === t.agent);
+    const where = duty?.via || (m?.use === 'app' ? 'app' : m?.use || '');
+    const p = progress[t.id];
+    return `<div class="step s-${state}"><span class="st-id">${esc(t.id)}${t.review ? ' · review' : ''}</span><span class="st-title">${esc(t.title)}</span>
+      <span class="st-who">${esc(t.agent)}${where ? ` · ${esc(where)}` : ''}</span><span class="n-state"><span class="dot"></span>${esc(label)}${t.rounds ? ` · round ${t.rounds}` : ''}</span>
+      ${p && t.status !== 'verified' ? `<span class="st-now">“${esc(p.text)}” · ${esc(p.at.slice(11))}</span>` : t.status === 'rejected' && t.rejectNote ? `<span class="st-now">To change: ${esc(t.rejectNote.slice(0, 140))}</span>` : t.report && t.status !== 'verified' ? `<span class="st-now">${esc(t.report.summary.slice(0, 140))}</span>` : ''}</div>`;
+  };
+  const running2 = chains(tasks).slice(0, 6);
+  const loose = tasks.filter((t) => ['claimed', 'rejected', 'reported'].includes(t.status) && !t.after && !tasks.some((x) => x.after === t.id)).slice(0, 6);
+  const stepsCard = running2.length || loose.length ? `<section class="card steps-card"><div class="card-h"><h2>Steps now</h2><span class="meta">${running2.length} chain${running2.length === 1 ? '' : 's'} · updates by itself</span></div>
+    <p class="why">Who has each step and where it is. A step gets the results of the one before it by itself; a review can send it back.</p>
+    ${running2.map((c) => `<div class="chain">${c.map(stepBox).join('<span class="arrow">→</span>')}</div>`).join('')}
+    ${loose.length ? `<div class="chain">${loose.map(stepBox).join('')}</div>` : ''}</section>` : '';
   const cmdRun = runs.filter((r) => r.name === cfg.commander).pop();
   const cmdBusy = cmdRun && runStatus(cmdRun) === 'running';
   const board = `<section class="card board-card"><div class="card-h"><h2>Your team</h2><span class="meta">${working.size} working · ${names.length} member${names.length === 1 ? '' : 's'}</span></div>
@@ -197,7 +222,7 @@ export function renderDashboard(store, { live = false } = {}) {
   const mainDebate = latestDebate && (latestDebate.status !== 'done' || String(latestDebate.finished || latestDebate.created).startsWith(today)) ? debateCard(latestDebate, false) : '';
 
   const mainPane = `${approveCard}
-    <div class="grid g-main"><div class="col">${talk}${board}</div><div class="col">${goalPanel}${todayPanel}${toolsCard}${recentCard}</div></div>
+    <div class="grid g-main"><div class="col">${talk}${stepsCard}${board}</div><div class="col">${goalPanel}${todayPanel}${toolsCard}${recentCard}</div></div>
     ${mainDebate}`;
 
   // ── DETAILS TAB ─────────────────────────────────────
@@ -344,6 +369,10 @@ button.tick{padding:0;background:none;cursor:pointer}button.tick:hover{backgroun
 .s-working{border-color:var(--ok)}.s-working .dot{background:var(--ok);box-shadow:0 0 8px var(--ok);animation:pulse 1.4s infinite}.s-working .n-state{color:var(--ok)}
 .s-check .dot,.s-ready .dot{background:var(--warn)}.s-check .n-state{color:var(--warn)}.s-stopped{border-color:#f2766c88}.s-stopped .dot{background:var(--bad)}.s-stopped .n-state{color:var(--bad)}
 .s-wait .dot{background:#6b6580}.s-done .dot{background:var(--ok)}.center{text-align:center}
+.s-duty{border-color:#5aa7ff88}.s-duty .dot{background:#5aa7ff}.s-duty .n-state{color:#8cc2ff}.s-back{border-color:#f2766c88}.s-back .dot{background:var(--bad)}.s-back .n-state{color:var(--bad)}
+.chain{display:flex;flex-wrap:wrap;align-items:stretch;gap:6px;margin-top:10px}.arrow{align-self:center;color:var(--muted)}
+.step{display:grid;gap:3px;min-width:150px;flex:1 1 150px;border:1px solid #3a2f66;background:#17142a;border-radius:10px;padding:9px 11px}
+.st-id{font-family:var(--mono);font-size:11px;color:var(--accent)}.st-title{font-size:13.5px}.st-who{font-size:12px;color:var(--muted)}.st-now{font-size:12px;color:var(--ink);opacity:.85;overflow-wrap:anywhere}
 .pane{display:none;gap:18px}.pane.on{display:grid}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px;min-width:0}
 .q{display:grid;gap:8px}.q+.q{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}

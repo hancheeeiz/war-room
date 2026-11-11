@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { now, sign, verify } from './store.mjs';
+import { shellSpec } from './agents.mjs';
 
 export const ADDON_NAME = /^[a-z0-9][a-z0-9-]{0,30}$/;
 export const LOCAL_URL = /^http:\/\/(localhost|127\.0\.0\.1)(:\d{2,5})?(\/[^\s]*)?$/;
@@ -32,7 +33,8 @@ export function waitingFor(store, a, { fresh = false } = {}) {
   const key = `${a.name}|${a.sig}`;
   const hit = cache.get(key);
   if (!fresh && hit && Date.now() - hit.at < 60e3) return hit.out;
-  const r = spawnSync('/bin/sh', ['-c', a.waiting], { cwd: path.dirname(store.root), encoding: 'utf8', timeout: 5000, env: { ...process.env, WAR_ROOM_AGENT: '' } });
+  const sh = shellSpec(a.waiting);
+  const r = spawnSync(sh.bin, sh.args, { ...sh.opts, cwd: path.dirname(store.root), encoding: 'utf8', timeout: 5000, env: { ...process.env, WAR_ROOM_AGENT: '' } });
   const out = r.error || r.status !== 0
     ? { error: (r.error?.code === 'ETIMEDOUT' ? 'took longer than 5 s' : (r.stderr || r.error?.message || `exit ${r.status}`)).trim().slice(0, 160), items: [] }
     : { items: r.stdout.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 50) };
@@ -55,7 +57,8 @@ export async function startAddons(store) {
     fs.mkdirSync(path.join(store.root, 'runs'), { recursive: true });
     const log = path.join(store.root, 'runs', `addon-${a.name}.log`);
     const fd = fs.openSync(log, 'a');
-    const child = spawn('/bin/sh', ['-c', a.start], { cwd: path.dirname(store.root), detached: true, stdio: ['ignore', fd, fd] });
+    const sh = shellSpec(a.start);
+    const child = spawn(sh.bin, sh.args, { ...sh.opts, cwd: path.dirname(store.root), detached: true, stdio: ['ignore', fd, fd] });
     child.unref();
     fs.closeSync(fd);
     started.push({ name: a.name, pid: child.pid, log: path.relative(path.dirname(store.root), log) });

@@ -4,7 +4,7 @@ import readline from 'node:readline';
 import { Store } from './store.mjs';
 import { TOOLS, callTool } from './tools.mjs';
 
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 const store = new Store();
 // One chat, one name: this server runs inside one chat, so the first agent name it acts as (or WAR_ROOM_AGENT, set
 // for worker chats the war room starts) is that chat's name for good. A commander chat cannot report as "mobile".

@@ -7,6 +7,8 @@ import { markdownToHtml, readShelfItem } from './shelf.mjs';
 import { ensureToday, studyProgress } from './tools.mjs';
 import { addonList } from './addons.mjs';
 import { chains, dutyOf, isReady, stepState } from './relay.mjs';
+import { KNOWN, SKILL, SOURCE, installedSkills, skillUrl } from './skills.mjs';
+import path from 'node:path';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
@@ -149,6 +151,17 @@ export function renderDashboard(store, { live = false } = {}) {
     <p class="why">Who has each step and where it is. A step gets the results of the one before it by itself; a review can send it back.</p>
     ${running2.map((c) => `<div class="chain">${c.map(stepBox).join('<span class="arrow">→</span>')}</div>`).join('')}
     ${loose.length ? `<div class="chain">${loose.map(stepBox).join('')}</div>` : ''}</section>` : '';
+  // ── Skills: what the war room found for the work, waiting for the founder's yes to install ──
+  // Only well-formed entries; the link and "known publisher" are worked out here, never taken from the file.
+  const skillRows = store.read('skills').filter((s) => s.status !== 'declined' && SOURCE.test(s.source || '') && SKILL.test(s.skill || '')).slice(-6).reverse()
+    .map((s) => ({ ...s, url: skillUrl(s), known: KNOWN.includes(s.source.split('/')[0].toLowerCase()), installs: Number(s.installs) || 0, stars: Number(s.stars) || null }));
+  let installedCount = 0;
+  try { installedCount = installedSkills(path.dirname(store.root)).length; } catch {}
+  const skillsCard = skillRows.length ? `<section class="card"><div class="card-h"><h2>Skills found for your work</h2><span class="meta">${installedCount} installed · used by every agent</span></div>
+    <p class="why">The war room gives each task the installed skills that fit it. When none fit, it looks in the public skills catalogue and only suggests ones from a known publisher or a well-starred project. A skill is instructions written by someone else: install only what you want every agent to follow.</p>
+    ${skillRows.map((s) => `<div class="item"><div class="plain"><b>${esc(s.skill)}</b> · ${esc(s.source)}</div>
+      <div class="meta">For: ${esc(String(s.need).slice(0, 120))} · ${esc(Number(s.installs).toLocaleString('en-GB'))} installs${s.stars ? ` · ${esc(s.stars)} GitHub stars` : ''}${s.known ? ' · known publisher' : ''} · <a href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">read it</a></div>
+      ${s.status === 'suggested' ? `<div class="btns"><button type="button" data-skill="${esc(s.id)}" data-skill-on="1">Install for all agents</button><button type="button" class="ghost" data-skill="${esc(s.id)}" data-skill-on="0">No</button></div><div class="out" id="skOut-${esc(s.id)}"></div>` : `<div class="meta">${esc({ installing: 'Installing… (if this stays for over 15 minutes, approve it again from the terminal)', installed: 'Installed ✓', failed: `Install failed${s.note ? `: ${s.note}` : ''}` }[s.status] || s.status)}</div>`}</div>`).join('')}</section>` : '';
   const cmdRun = runs.filter((r) => r.name === cfg.commander).pop();
   const cmdBusy = cmdRun && runStatus(cmdRun) === 'running';
   const board = `<section class="card board-card"><div class="card-h"><h2>Your team</h2><span class="meta">${working.size} working · ${names.length} member${names.length === 1 ? '' : 's'}</span></div>
@@ -222,7 +235,7 @@ export function renderDashboard(store, { live = false } = {}) {
   const mainDebate = latestDebate && (latestDebate.status !== 'done' || String(latestDebate.finished || latestDebate.created).startsWith(today)) ? debateCard(latestDebate, false) : '';
 
   const mainPane = `${approveCard}
-    <div class="grid g-main"><div class="col">${talk}${stepsCard}${board}</div><div class="col">${goalPanel}${todayPanel}${toolsCard}${recentCard}</div></div>
+    <div class="grid g-main"><div class="col">${talk}${stepsCard}${board}</div><div class="col">${goalPanel}${todayPanel}${skillsCard}${toolsCard}${recentCard}</div></div>
     ${mainDebate}`;
 
   // ── DETAILS TAB ─────────────────────────────────────
@@ -321,7 +334,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--font);pa
 .ap{display:grid;grid-template-columns:1fr auto;gap:10px 16px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}.ap:first-of-type{border-top:0;padding-top:0}
 .ap-btns{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.ap .out{grid-column:1/-1}
 .cmd{margin:8px 0 4px;display:grid;gap:4px}.cmd span{font-size:12px;color:var(--warn);font-weight:600}.cmd code{display:block;white-space:pre-wrap;word-break:break-all;font-size:12.5px;padding:8px 10px;border:1px solid #e2a64f55}
-.ghost{border:1px solid var(--line);background:var(--surface2);color:var(--ink);border-radius:10px;padding:9px 14px;font-weight:500}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.ghost{border:1px solid var(--line);background:var(--surface2);color:var(--ink);border-radius:10px;padding:9px 14px;font-weight:500}
 @media (max-width:560px){.ap{grid-template-columns:1fr}.ap-btns{justify-content:stretch}.ap-btns button{flex:1;padding:12px}}
 .divider{height:1px;background:var(--line);margin:16px 0}
 .jump{display:flex;gap:6px;flex-wrap:wrap}.jump a{font-size:13px;color:var(--muted);text-decoration:none;padding:5px 12px;border-radius:999px;background:var(--surface);border:1px solid var(--line)}.jump a:hover{color:var(--ink)}
@@ -448,6 +461,8 @@ document.querySelectorAll('[data-close-book]').forEach(b=>b.onclick=closeBook);
 document.querySelectorAll('.tabs [data-go]').forEach(b=>b.addEventListener('click',()=>{if(b.dataset.go!=='shelf')closeBook()}));
 document.querySelectorAll('[data-read]').forEach(b=>b.onclick=async()=>{const read=b.dataset.was!=='1';b.disabled=true;
   if(await post('/api/read',{id:b.dataset.read,read},document.getElementById('readOut-'+b.dataset.read),'war-room read --note '+b.dataset.read+(read?'':' --undo')))setTimeout(()=>location.reload(),500);else b.disabled=false});
+document.querySelectorAll('[data-skill]').forEach(b=>b.onclick=async()=>{const approve=b.dataset.skillOn==="1";b.disabled=true;
+  if(await post('/api/skill',{id:b.dataset.skill,approve},document.getElementById('skOut-'+b.dataset.skill),'war-room skills --id '+b.dataset.skill+(approve?' --approve':' --no')))setTimeout(()=>location.reload(),900);else b.disabled=false});
 document.querySelectorAll('[data-addon]').forEach(b=>b.onclick=async()=>{const approve=b.dataset.on==="1";b.disabled=true;
   if(await post('/api/addon',{name:b.dataset.addon,approve},document.getElementById('adOut-'+b.dataset.addon),'war-room addon --name '+b.dataset.addon+(approve?' --approve':' --off')))setTimeout(()=>location.reload(),500);else b.disabled=false});
 if(location.hash.startsWith('#shelf/'))openBook(decodeURIComponent(location.hash.slice(7)));

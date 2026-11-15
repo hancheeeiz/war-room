@@ -5,7 +5,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
 import { addonList, approveAddon, startAddons } from '../server/addons.mjs';
-import { LABEL, enginePidFile, enginePath, engineRunning, loginItem, morningRun, vbsText, plistPath, plistText, register, registered, sweepWork, tidyInbox, unregister } from '../server/engine.mjs';
+import { decideSkill, installedSkills } from '../server/skills.mjs';
+import { LABEL, autoFindSkills, enginePidFile, enginePath, engineRunning, loginItem, morningRun, vbsText, plistPath, plistText, register, registered, sweepWork, tidyInbox, unregister } from '../server/engine.mjs';
 import { resumeAfterApproval, shellSpec, wakeCommander, wakeMember } from '../server/agents.mjs';
 import { STARTER_RULES, starterRules } from '../server/starter-rules.mjs';
 import { autoRemember, brief, callTool, consumeApproval, dailyCheck, requestApproval, resolveApproval, markRead, ruleInForce, tickToday } from '../server/tools.mjs';
@@ -34,12 +35,14 @@ const FOUNDER_YES = [
   [/api\.stripe\.com|\bstripe\s+(charges|payment|refunds|transfers|payouts)|\brevenuecat\b.*\b(grant|refund)\b/i, 'money'],
   [/\bsecurity\s+(find|add|delete)-(generic|internet)-password\b|\bgcloud\s+auth\b|\bgh\s+auth\b|\bnpm\s+(login|token)\b/, 'passwords or keys'],
   [/\|\s*(sudo\s+)?(ba|z|da|k)?sh\b|\b(ba|z)?sh\s+<\s*\(\s*(curl|wget)|\bbase64\s+(-d|--decode|-D)\b[^;&]*\|/, 'running downloaded or decoded code'],
+  // The page's buttons (approve, install, answer) are for the founder; a chat posting to them is answering for them.
+  [/\b(curl|wget|http|https|xh|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b[^|;&\n]*(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^|;&\n]*\/api\//i, 'pressing a button on the founder\'s war-room page'],
   [/\bwar-room(\.mjs)?\b[^|;&\n]*\bengine\s+(install|uninstall|add|remove|run)\b/, 'making something start by itself on this computer'],
   // Each morning run is a paid commander run; the watcher starts one a day by itself.
   [/\bwar-room(\.mjs)?\b[^|;&\n]*\bmorning\b/, 'starting an extra paid commander run'],
   [/\bschtasks\b|\b(Register|New)-ScheduledTask\b|Start Menu[\\/]+Programs[\\/]+Startup|CurrentVersion[\\/]+Run(Once)?\b/i, 'making something start by itself on this computer'],
   [/\blaunchctl\s+(load|bootstrap|enable|submit|kickstart)\b|Library\/LaunchAgents\b|\bcrontab\b/, 'making something start by itself on this computer'],
-  [/\bclaude\s+(plugin|mcp)\s+(add|install)\b|\bnpx\s+skills?\s+add\b/, 'installing a skill, plugin or connector'],
+  [/\bclaude\s+(plugin|mcp)\s+(add|install)\b|\b(npx|bunx|pnpx|dlx|exec)\b[^|;&\n]*\bskills?\s+(add|a)\b/, 'installing a skill, plugin or connector'],
 ];
 const RISKY_TOOL = /(deploy|publish|delete|remove|trash|send_message|send_email|charge|payment|refund|purchase|transfer)/i;
 
@@ -118,7 +121,7 @@ async function serve(opts = {}) {
   let token = (opts.keepLink ?? rest.includes('--keep-link')) && fs.existsSync(keepFile) ? fs.readFileSync(keepFile, 'utf8').trim() : crypto.randomBytes(24).toString('base64url');
   if (lan) fs.writeFileSync(keepFile, token, { mode: 0o600 });
   const tokenOk = (got) => !lan || (typeof got === 'string' && got.length === token.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(token)));
-  const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals', 'runs', 'debates', 'team', 'shelf', 'progress'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
+  const version = () => ['memory', 'goals', 'tasks', 'messages', 'approvals', 'runs', 'debates', 'team', 'shelf', 'progress', 'skills'].map((n) => { try { return fs.statSync(`${store.root}/${n}.json`).mtimeMs; } catch { return 0; } }).join('-')
     + (fs.existsSync(`${store.root}/log.jsonl`) ? fs.statSync(`${store.root}/log.jsonl`).mtimeMs : 0);
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); };
   const actions = {
@@ -176,6 +179,10 @@ async function serve(opts = {}) {
     // The founder approves or switches off an add-on the commander registered.
     '/api/addon': (b) => {
       try { approveAddon(store, { name: String(b.name), approve: b.approve !== false }); return { text: 'ok' }; } catch (e) { return { error: e.message }; }
+    },
+    // The founder approves (installs for every agent) or declines a suggested skill.
+    '/api/skill': (b) => {
+      try { decideSkill(store, { id: String(b.id), approve: b.approve === true }); return { text: 'ok' }; } catch (e) { return { error: e.message }; }
     },
     '/api/goal': (b) => {
       const out = callTool(store, 'decide_goal', { agent: store.config().commander, goalId: String(b.goalId), choice: String(b.choice), founderWords: `chose "${b.choice}" on the war-room page` });
@@ -248,6 +255,7 @@ async function startWatch(opts = {}) {
       const m = morningRun(store);
       if (m?.run) notify(store, `Morning run: the commander is looking at ${m.need.join(', ')}.`);
     } catch (e) { console.error(`morning run: ${e.message}`); }
+    autoFindSkills(store).then((added) => { if (added.length) notify(store, `Skill suggestion${added.length > 1 ? 's' : ''} on your page: ${added.map((s) => s.skill).join(', ')}.`); }, () => {});
     redraw();
   };
   pass();
@@ -635,6 +643,23 @@ switch (cmd) {
     } catch (e) { console.error(e.message); process.exitCode = 1; }
     break;
   }
+  case 'skills': {
+    // Installed skills, suggestions, and the founder's approve / decline: war-room skills [--find "query"] [--id k1 --approve|--no]
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    try {
+      const id = flag('id');
+      if (id) { const s = decideSkill(store, { id, approve: rest.includes('--approve') }); console.log(`${s.id} ${s.source}@${s.skill}: ${s.status}${s.status === 'installing' ? ' (for every agent; log in .warroom/runs/)' : ''}`); break; }
+      if (flag('find')) { const out = JSON.parse((await callTool(store, 'find_skills', { agent: 'founder', query: flag('find'), online: true })).text); console.log(JSON.stringify(out, null, 2)); break; }
+      const list = installedSkills(path.dirname(store.root), { fresh: true });
+      console.log(`${list.length} skills installed and used by the war room:`);
+      for (const s of list) console.log(`  ${s.name.padEnd(32)} ${s.source}`);
+      const sug = store.read('skills');
+      if (sug.length) console.log('\nSuggestions:');
+      for (const s of sug) console.log(`  ${s.id} ${s.status.padEnd(10)} ${s.source}@${s.skill} · ${s.installs} installs${s.stars ? ` · ${s.stars} stars` : ''}${s.known ? ' · known publisher' : ''} · for: ${s.need}`);
+      if (sug.some((s) => s.status === 'suggested')) console.log('\nInstall one for every agent: war-room skills --id k1 --approve   (or --no)');
+    } catch (e) { console.error(e.message); process.exitCode = 1; }
+    break;
+  }
   case 'daily': {
     // Make today's list and send the daily summary now (the watcher does this by itself once a day).
     if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
@@ -692,6 +717,7 @@ switch (cmd) {
   approve --id A --yes|--no · answer --question ID --text "..." · confirm-rules [--yes]
   addon [--name N --approve|--off] [--start]   your add-ons: list, approve, switch off, start
   daily                           make today's list and send the daily summary now
+  skills [--find "Q"] [--id kN --approve|--no]   installed skills, suggestions, approve an install
   tick --item N [--goal G] [--undo]   tick today's goal N yourself (one with no task behind it)
   read --note bN [--undo]             mark a shelf note read (moves your study bar)
   init · serve [--lan] · watch · dashboard · brief [--agent N] · call TOOL [JSON] · check-stale`);

@@ -25,6 +25,7 @@ Everything else (starting helper chats, the page, connecting other agents) the c
 - **Today's list makes itself.** Each new day the war room builds today's list from the plan: yesterday's unfinished items carry over, then the next open checks fill it up to three. The commander can improve it and give items a time (`"at": "09:30"`). Once a day the watcher leaves one plain summary in the commander's inbox and on your phone notifier: today, behind schedule, questions waiting on you, work nobody is running. `war-room daily` does it now.
 - **The commander routes, the team works.** The commander cannot take tasks or have them handed back to it, so it never checks its own work. A task for a hired role starts that role's chat straight away (`"autoStartWorkers": false` turns this off). Each chat keeps one name: a chat that acted as the commander cannot report as "mobile", a task must be taken before it is reported, and a chat running task tools from the shell needs your yes. The brief calls out open work with nobody on it.
 - **Keeps going when no chat is open (the engine), on Mac and Windows.** Run `war-room engine install` once, in each project that has a war room (add `--project <folder>` for others). Your Mac then keeps each war room's page and watcher running from login. Every 10 minutes the watcher hands fresh untaken work to the team (at most 3 workers at once, 3 restarts per task a day; work untouched for over 3 days waits for the commander instead). Every morning after 08:00 it wakes the commander when something needs it: reports to check, messages, plans without dates, old open work. Checked reports close their own inbox messages. On Windows it puts a small hidden-window script in your Startup folder (no admin rights needed). `war-room engine status` shows what runs; `war-room engine uninstall` turns it off. The first time, macOS may ask whether node may open your Documents folder: allow it, or the engine cannot read war rooms kept there.
+- **Finds and uses skills by itself.** The war room reads every skill installed on your computer (Claude Code's, Codex's and the other agents' shared folder, the project's own, and the ones plugins bring) and writes the ones that fit into each task, with the file to read, so any agent follows them. Hiring a role shows which skills fit it. When nothing installed fits, the watcher searches the public catalogue ([skills.sh](https://skills.sh)) and suggests only skills from a known publisher or a well-starred project, under **Skills found for your work** on the page. Copies with big install counts but no known publisher are left out. Installing runs instructions written by someone else, so it happens only when you tap **Install for all agents**; no chat can install one. `war-room skills` lists them; `"skillSearch": false` stops the online search.
 - **Work goes to the team only.** Tasks can be given only to hired roles (`"teamOnly": false` allows any name). A chat working under another name is told it is not on the team, and the commander's brief lists it.
 - **Grows the features you want (add-ons).** Each founder wants different things: a lesson page, a reading tracker, a habit log. When the commander builds one in your project it registers it with `add_feature`. You approve it once on the page under **Your tools** (nothing it lists runs before that, and a changed command needs approving again). Then the page links to it and shows what is waiting in it, `war-room up` starts it, and the commander's brief and daily check list what waits there, so a question you left in a lesson does not go unanswered. `war-room addon` lists them in the terminal.
 - **Remembers you between chats.** Every commander chat starts with your latest decisions and preferences listed, not just the rules, so it does not ask again.
@@ -46,6 +47,7 @@ war-room up --phone        # the page plus a private link for your phone (same W
 war-room status            # progress bars in the terminal
 war-room engine install    # keep this war room running from login (status · add · remove · uninstall)
 war-room morning           # wake the commander now to work through what needs it
+war-room skills            # installed skills the war room uses, and suggestions (--find "video" to search)
 war-room daily             # make today's list and send the daily summary now
 war-room addon             # your add-ons: what they run and what waits (--name N --approve to approve one)
 war-room debate "Should we use Postgres or SQLite?"   # let the installed agents argue
@@ -180,6 +182,7 @@ It is recorded as a decision at once and the question closes.
 | `get_task_packet` / `report_done` | workers | Do one packet, report evidence and the files you made; a review step reports `verdict` pass or fail |
 | `wait_for_work` | any chat opened by hand | Stand by: get the next task, message or (commander) report as soon as it is ready, then call again |
 | `progress` | workers | One line on where you are; shown live on the step board |
+| `find_skills` | everyone | Installed skills that fit a piece of work; searches the catalogue and saves trusted results as suggestions for the founder |
 | `post_message` / `read_messages` | everyone | Requests, contracts, handoffs between agents |
 | `hire` | commander | Add, change or remove a named role on the team (role, what it does, which agent and model) |
 | `start_worker` | commander | Start a helper chat in the background (Claude, Codex, Gemini or Cursor) |
@@ -192,7 +195,7 @@ Agent names are self-declared. The commander-only checks keep roles clear betwee
 
 ## Data
 
-Plain JSON in `<project>/.warroom/`: `memory.json`, `goals.json`, `tasks.json`, `team.json`, `messages.json`, `runs.json`, `debates.json`, `shelf.json` (pointers only), `addons.json` (approval signed on your computer), `duty.json` (which app chats are standing by), `progress.json` (each step's latest line), `log.jsonl`. The engine's list of war rooms lives in `~/.config/war-room/projects.json`. A file lock keeps several agents from overwriting each other. It has no dependencies; needs Node 18+.
+Plain JSON in `<project>/.warroom/`: `memory.json`, `goals.json`, `tasks.json`, `team.json`, `messages.json`, `runs.json`, `debates.json`, `shelf.json` (pointers only), `addons.json` (approval signed on your computer), `duty.json` (which app chats are standing by), `progress.json` (each step's latest line), `skills.json` (suggested skills and your decisions), `log.jsonl`. The engine's list of war rooms lives in `~/.config/war-room/projects.json`. A file lock keeps several agents from overwriting each other. It has no dependencies; needs Node 18+.
 
 ## Security
 
@@ -203,6 +206,7 @@ What the war room protects (each one is a test in `test/`, written as the attack
 - **Chats cannot write the rules.** A chat, or a web page or file a chat read, can only *propose* a rule. It reaches the other chats after you confirm it on the page, or with `war-room confirm-rules --yes` for rules you imported. Everything else in a chat's briefing is labelled as information, not instructions.
 
 - **No self-approval.** No tool lets an agent approve or answer for the founder. The guard blocks a chat that tries the CLI (`war-room approve`, `answer`, `confirm-rules` or `rules --off`), edits `.warroom/` files by hand, or touches `~/.config/war-room/`.
+- **Chats cannot press your page's buttons.** The guard asks before a chat sends a request to the war-room page on this computer (approve, install a skill, answer), or installs a skill with any package runner.
 - **The guard cannot be quietly switched off.** It also asks before a chat disables or uninstalls plugins, or edits Claude Code settings or hook files.
 - **Approvals are narrow.** Each approval covers one exact command, can be used once, and lapses after 30 minutes.
 - **The page is guarded.** It refuses non-localhost hosts (DNS rebinding) and non-JSON posts (cross-site forms), cannot be framed by another site (clickjacking), runs under a strict content policy, and sends no referrer. The phone link is new every time you start `serve --lan`, unless you pass `--keep-link`. The page loads nothing from other sites.

@@ -8,6 +8,7 @@ import path from 'node:path';
 import { recipes, runStatus, startWorker, which } from './agents.mjs';
 import { now, userDir } from './store.mjs';
 import { isReady, mayStartCli } from './relay.mjs';
+import { searchCatalogue, suggest } from './skills.mjs';
 
 const today = () => now().slice(0, 10);
 const num = (v, dflt) => (Number.isFinite(v) ? v : dflt);
@@ -141,6 +142,28 @@ export function outsideTeam(store, days = 3) {
     counts.set(e.agent, (counts.get(e.agent) || 0) + 1);
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+// ── Finding skills by itself ─────────────────────────
+// Open work that no installed skill fits gets one catalogue search (two tasks per pass at most), and trusted results
+// become suggestions on the founder's page. Never installs. Off with "skillSearch": false in .warroom/config.json.
+let searching = false;
+export async function autoFindSkills(store) {
+  if (searching || store.config().skillSearch === false || process.env.WAR_ROOM_OFFLINE) return [];
+  if (store.read('skills').filter((s) => s.status === 'suggested').length >= 6) return [];
+  // Fresh work only: old open tasks may be out of date, and each search also asks GitHub (60 questions an hour).
+  const cut = sweepCutoff(store);
+  const todo = store.read('tasks').filter((t) => ['open', 'claimed', 'rejected'].includes(t.status) && lastTouched(t) >= cut && !t.skills?.some((x) => x.strong !== false) && !t.skillSearched).slice(0, 2);
+  if (!todo.length) return [];
+  searching = true;
+  const added = [];
+  try {
+    for (const t of todo) {
+      store.update('tasks', (all) => { const x = all.find((y) => y.id === t.id); if (x) x.skillSearched = now(); });
+      try { added.push(...suggest(store, { need: `${t.id} ${t.title}`, query: t.title, results: await searchCatalogue(t.title) })); } catch {}
+    }
+  } finally { searching = false; }
+  return added;
 }
 
 // ── The morning commander run ────────────────────────

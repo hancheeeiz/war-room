@@ -4,6 +4,7 @@ import { ADDON_NAME, LOCAL_URL, addonInForce, addonList } from './addons.mjs';
 import { createDebate, launchDebate, runStatus, startWorker, stoppedWorkers } from './agents.mjs';
 import { inboxCounts, oldOpenWork, outsideTeam, tidyInbox } from './engine.mjs';
 import { beat, isReady, mayStartCli, resultsText } from './relay.mjs';
+import { installedSkills, matchSkills, searchCatalogue, skillsText, suggest } from './skills.mjs';
 import { firstHeading, readShelfItem, resolveShelfPath } from './shelf.mjs';
 import { starterRules } from './starter-rules.mjs';
 import { MEMORY_KINDS, nextId, now, overlap, sameTopic, sign, verify, words } from './store.mjs';
@@ -295,6 +296,8 @@ export function brief(store, agent) {
     if (outside.length) out.push('', '## Chats working outside the team (last 3 days; hire the ones that should stay, so their work is tracked)', ...outside.slice(0, 6).map(([n, c]) => `- ${n}: ${c} actions`));
     const mineAsCommander = tasks.filter((t) => t.agent === cfg.commander && !['verified'].includes(t.status));
     if (mineAsCommander.length) out.push('', '## Tasks still assigned to you, the commander (reassign_task each to a team member; you check work, you do not do it)', ...mineAsCommander.map((t) => `- ${t.id} ${t.title}`));
+    const sugg = store.read('skills').filter((s) => s.status === 'suggested');
+    if (sugg.length) out.push('', '## Skill suggestions waiting for the founder (they approve installs on the page; tell them in one plain line why each would help)', ...sugg.slice(0, 6).map((s) => `- ${s.id} ${s.source}@${s.skill} for "${String(s.need).slice(0, 80)}" (${s.installs} installs${s.stars ? `, ${s.stars} GitHub stars` : ''}${s.known ? ', known publisher' : ''})`));
     const addons = addonList(store);
     if (addons.length) out.push('', '## Add-ons (features built for this founder; check what waits in each)', ...addons.flatMap((x) => {
       if (!x.active) return [`- ${x.name} (${x.title}): ${x.off ? 'switched off by the founder' : 'waiting for the founder\'s approval on the page'}`];
@@ -338,6 +341,7 @@ function packetText(t, goals, memory, tasks = []) {
     t.files?.length ? `You may change only: ${t.files.join(', ')}` : t.area ? `Area: ${t.area}` : null,
     `Done means: ${t.doneCheck}`,
     t.rejectNote ? (t.sentBackBy ? `Sent back for changes: ${t.rejectNote}` : `Commander rejected the last report: ${t.rejectNote}`) : null,
+    skillsText(t.skills),
     resultsText(t, tasks),
     t.review ? `This is a review step: check the work of ${t.after} against its done check and the goal. In report_done set verdict "pass" or "fail"; on fail, say exactly what to change in summary (it goes back to that step).` : null,
     ...[...rules, ...extra].map((m) => `- relevant ${m.kind} [${m.id}]: ${m.text}`),
@@ -668,6 +672,7 @@ export const TOOLS = [
         rules: strList('Memory ids that apply.'), tags: strList('Topic words to pull more memory.'),
         model: str('Suggested model tier for the worker chat: "strong" (design, architecture, risky changes) or "cheap" (mechanical, well-specified work). The founder or dispatcher picks the actual model when starting the chat.'),
         after: str('Step-by-step: the task id that must be verified first. This task waits, then its worker starts by itself once that one is verified. The step receives that step\'s report and files.'),
+        skills: strList('Installed skills this task must use, by name. Leave out to let the war room pick the ones that fit.'),
         review: { type: 'boolean', description: 'A review step (needs after): ready as soon as the step before reports. Its worker reports verdict pass (the step before counts as checked and the chain moves on) or fail (the step before goes back for the changes it lists, up to reviewRounds times, default 3). Give it to a different role than the step it reviews.' },
       },
       required: ['agent', 'goalId', 'title', 'assignTo', 'doneCheck'],
@@ -679,13 +684,20 @@ export const TOOLS = [
       const goal = store.read('goals').find((g) => g.id === a.goalId);
       if (!goal || goal.status !== 'active') throw new Refused('Tasks need an active goal with a plan (set_plan).');
       const memory = store.read('memory');
+      // Skills: the ones the commander named (must be installed), else the installed ones that fit this work and role.
+      const installed = installedSkills(path.dirname(store.root));
+      const member = store.read('team').find((m) => m.name === a.assignTo);
+      const named = (a.skills || []).map((n) => installed.find((s) => s.name === n) || n);
+      const missing = named.filter((x) => typeof x === 'string');
+      if (missing.length) throw new Refused(`Not installed: ${missing.join(', ')}. find_skills shows what is installed and can suggest new ones.`);
+      const skills = named.length ? named.map(({ name, file }) => ({ name, file })) : matchSkills(`${a.title} ${(a.tags || []).join(' ')} ${member?.role || ''} ${member?.does || ''}`, installed).map(({ name, file, description, strong }) => ({ name, file, ...(strong ? {} : { strong: false, description: description.slice(0, 140) }) }));
       const out = store.update('tasks', (tasks) => {
         const clash = (a.files || []).length && tasks.find((t) => !['verified'].includes(t.status) && t.agent !== a.assignTo && (t.files || []).some((f) => a.files.some((g) => f.startsWith(g) || g.startsWith(f))));
         if (clash) throw new Refused(`${clash.agent} is already working on overlapping files (${clash.id}). One writer per file: wait or pick other files.`);
         if (a.after && !tasks.some((x) => x.id === a.after)) throw new Refused(`No task ${a.after} to wait for.`);
         if (a.review && !a.after) throw new Refused('A review step needs after: the task it reviews.');
         if (a.review && tasks.find((x) => x.id === a.after)?.agent === a.assignTo) throw new Refused('A review step must go to a different role than the step it reviews.');
-        const t = { id: nextId(tasks, 't'), goalId: a.goalId, checkId: a.checkId, title: a.title, agent: a.assignTo, files: a.files || [], area: a.area, doneCheck: a.doneCheck, rules: a.rules || [], tags: a.tags || [], model: a.model, after: a.after, ...(a.review ? { review: true } : {}), status: 'open', created: now() };
+        const t = { id: nextId(tasks, 't'), goalId: a.goalId, checkId: a.checkId, title: a.title, agent: a.assignTo, files: a.files || [], area: a.area, doneCheck: a.doneCheck, rules: a.rules || [], tags: a.tags || [], model: a.model, after: a.after, ...(a.review ? { review: true } : {}), ...(skills.length ? { skills } : {}), status: 'open', created: now() };
         tasks.push(t);
         store.log({ agent: a.agent, event: 'create_task', id: t.id, to: t.agent, title: t.title });
         const missedMemory = relevantMemory(memory, `${t.title} ${t.doneCheck} ${(t.tags || []).join(' ')}`, 6, true).filter((m) => !t.rules.includes(m.id)).map(({ id, kind, date, text }) => ({ id, kind, date, text }));
@@ -969,7 +981,8 @@ TOOLS.push(
         const m = { ...(team[i] || { joined: now() }), name: a.name, ...(a.role && { role: a.role }), ...(a.does && { does: a.does }), ...(a.use && { use: a.use }), ...(a.model && { model: a.model }) };
         if (i < 0) team.push(m); else team[i] = m;
         store.log({ agent: a.agent, event: i < 0 ? 'hired' : 'team_updated', text: `${m.name}: ${m.role}` });
-        return m;
+        const fit = matchSkills(`${m.name} ${m.role} ${m.does || ''}`, installedSkills(path.dirname(store.root))).filter((x) => x.strong);
+        return { ...m, skillsThatFit: fit.map((s) => s.name), next: fit.length ? 'These installed skills fit this role; tasks for it get them automatically.' : 'No installed skill fits this role yet: call find_skills with what it does to get suggestions for the founder.' };
       });
     },
   },
@@ -1165,6 +1178,24 @@ TOOLS.push(
     },
   },
 );
+
+TOOLS.push({
+  name: 'find_skills',
+  description: 'Find skills for a piece of work. Returns the installed skills that fit (any agent can read their SKILL.md), and, when online is true or nothing installed fits, searches the public skills catalogue and saves the most trusted results as suggestions on the founder\'s page. Installing needs the founder\'s approval there; never install a skill yourself.',
+  inputSchema: { type: 'object', properties: { agent: AGENT, query: str('What the work is, in a few words, e.g. "make a short product video".'), online: { type: 'boolean', description: 'Search the catalogue even if an installed skill fits.' } }, required: ['agent', 'query'] },
+  run: async (store, a) => {
+    const fit = matchSkills(a.query, installedSkills(path.dirname(store.root), { fresh: true }), 5);
+    const out = { installed: fit.map(({ name, description, file, strong }) => ({ name, sure: strong, description: description.slice(0, 200), file })) };
+    if (fit.some((x) => x.strong) && !a.online) return { ...out, next: 'Use these: name them in create_task skills, or read the SKILL.md yourself.' };
+    try {
+      const results = await searchCatalogue(a.query);
+      const added = suggest(store, { need: a.query, query: a.query, results });
+      return { ...out, suggested: added.map(({ id, source, skill, installs, stars, known }) => ({ id, source, skill, installs, stars, known })), next: added.length ? 'Saved as suggestions on the founder\'s page. Tell them in one plain line what each would help with; they approve the install there.' : 'Nothing trusted and new found online (copies with no known publisher or few GitHub stars are left out).' };
+    } catch (e) {
+      return { ...out, online: `Search failed: ${e.message}` };
+    }
+  },
+});
 
 // Enforce each tool's schema on the server: clients are not trusted to have checked types, enums or required fields.
 function checkArgs(schema, args) {

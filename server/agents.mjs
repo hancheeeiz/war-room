@@ -146,12 +146,22 @@ export function startWorker(store, { name, agent = 'claude', model, prompt }) {
 
 // The founder wrote on the page: start a background commander to route it, unless one is already running
 // (it reads every open message, so one run is enough). Off with "autoCommander": false in .warroom/config.json.
-export function wakeCommander(store) {
+export function commanderBrain(store) {
   const cfg = store.config();
-  if (cfg.autoCommander === false || !which(recipes().claude.bin) || !mayStartCli(store, cfg.commander)) return null;
+  const agent = cfg.commanderAgent || 'claude';
+  const r = recipes()[agent];
+  if (!r || !r.work) return { agent, error: `The commander brain "${agent}" cannot run background work. Pick one of: ${Object.entries(recipes()).filter(([, v]) => v.work).map(([k]) => k).join(', ')}.` };
+  const model = cfg.commanderModel || undefined;
+  return { agent, model };
+}
+
+export function wakeCommander(store, { prompt } = {}) {
+  const cfg = store.config();
+  const brain = commanderBrain(store);
+  if (cfg.autoCommander === false || brain.error || !which(recipes()[brain.agent].bin) || !mayStartCli(store, cfg.commander)) return null;
   const last = store.read('runs').filter((r) => r.name === cfg.commander).pop();
   if (last && runStatus(last) === 'running') return null;
-  return startWorker(store, { name: cfg.commander, agent: 'claude', model: cfg.commanderModel, prompt: commanderPrompt(cfg.commander) });
+  return startWorker(store, { name: cfg.commander, agent: brain.agent, model: brain.model, prompt: prompt || commanderPrompt(cfg.commander) });
 }
 
 // The founder wrote to one team member directly: start it so it reads the message (if it is not already running).

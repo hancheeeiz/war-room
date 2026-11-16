@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { recipes, runStatus, startWorker, which } from './agents.mjs';
+import { commanderBrain, recipes, runStatus, startWorker, wakeCommander, which } from './agents.mjs';
 import { now, userDir } from './store.mjs';
 import { isReady, mayStartCli } from './relay.mjs';
 import { searchCatalogue, suggest } from './skills.mjs';
@@ -208,13 +208,43 @@ export function morningRun(store, { force = false } = {}) {
   if (!force && store.readLog(100000).some((e) => e.event === 'morning_run' && e.at?.startsWith(today()))) return null;
   const need = commanderNeeds(store);
   if (!need.length && !force) return null;
-  if (!which(recipes().claude.bin)) return { skipped: 'Claude Code is not installed, so the commander cannot be started.' };
+  const brain = commanderBrain(store);
+  if (brain.error) return { skipped: brain.error };
+  if (!which(recipes()[brain.agent].bin)) return { skipped: `${brain.agent} is not installed, so the commander cannot be started.` };
   const last = store.read('runs').filter((r) => r.name === cfg.commander).pop();
   if (last && runStatus(last) === 'running') return { skipped: 'the commander is already running' };
   if (!mayStartCli(store, cfg.commander)) return { skipped: 'the commander is on duty in an app and sees this itself' };
-  const run = startWorker(store, { name: cfg.commander, agent: 'claude', model: cfg.commanderModel || 'sonnet', prompt: morningPrompt(cfg.commander) });
+  const run = startWorker(store, { name: cfg.commander, agent: brain.agent, model: brain.model || (brain.agent === 'claude' ? 'sonnet' : undefined), prompt: morningPrompt(cfg.commander) });
   store.log({ agent: 'war-room', event: 'morning_run', id: run.id, text: need.join(', ') });
   return { run, need };
+}
+
+// ── The commander hears when work is done or stuck ──
+// A worker's report, a failed review, a problem or a question waits in the commander's inbox. Wake the commander for
+// it, but never in a loop: at most "commanderWakesPerDay" times a day (default 6), at least "commanderGapMin" minutes
+// apart (default 20), and only for messages that need a decision (not info, not the daily summary).
+export function commanderCall(store) {
+  const cfg = store.config();
+  if (cfg.autoCommander === false || cfg.commanderWake === false) return null;
+  const waiting = store.read('messages').filter((m) => m.open && m.to === cfg.commander && m.from !== 'founder' && ['handoff', 'conflict', 'problem', 'question', 'request'].includes(m.kind));
+  if (!waiting.length) return null;
+  const log = store.readLog(100000);
+  const wakes = log.filter((e) => e.event === 'commander_wake' && e.at?.startsWith(today()));
+  const cap = Number(cfg.commanderWakesPerDay ?? 6);
+  if (wakes.length >= cap) return { skipped: `already woke the commander ${wakes.length} times today` };
+  const gap = Number(cfg.commanderGapMin ?? 20) * 60e3;
+  const lastRun = store.read('runs').filter((r) => r.name === cfg.commander).pop();
+  if (lastRun && Date.now() - (lastRun.startedMs || 0) < gap) return null;
+  const brain = commanderBrain(store);
+  if (brain.error || !which(recipes()[brain.agent].bin) || !mayStartCli(store, cfg.commander)) return null;
+  const run = wakeCommander(store, { prompt: callPrompt(cfg.commander) });
+  if (!run) return null;
+  store.log({ agent: 'war-room', event: 'commander_wake', id: run.id, text: `${waiting.length} message(s) from the team` });
+  return { run, waiting: waiting.length };
+}
+
+function callPrompt(name) {
+  return `You are "${name}", the war-room commander, woken because your team reported something. Call war_room_brief with agent "${name}", then read_messages. For each report: check the work against its done check, then verify_task, or reject it with a reason so it goes back. For each problem: decide the fix, route it, or ask_founder one plain question with your suggested answer. When a step finishes, make sure the next step has someone on it. Close each message with read_messages close=[ids] and a one-line plain reply. Route and check; do not build. Never push, deploy, publish, delete data or spend money.`;
 }
 
 // ── The engine: registry of war rooms and the login item ─

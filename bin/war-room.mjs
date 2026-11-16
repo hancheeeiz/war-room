@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
 import { addonList, approveAddon, startAddons } from '../server/addons.mjs';
 import { decideSkill, installedSkills } from '../server/skills.mjs';
-import { LABEL, autoFindSkills, enginePidFile, enginePath, engineRunning, loginItem, morningRun, vbsText, plistPath, plistText, register, registered, sweepWork, tidyInbox, unregister } from '../server/engine.mjs';
+import { LABEL, autoFindSkills, commanderCall, enginePidFile, enginePath, engineRunning, loginItem, morningRun, vbsText, plistPath, plistText, register, registered, sweepWork, tidyInbox, unregister } from '../server/engine.mjs';
 import { resumeAfterApproval, shellSpec, wakeCommander, wakeMember } from '../server/agents.mjs';
 import { STARTER_RULES, starterRules } from '../server/starter-rules.mjs';
 import { autoRemember, brief, callTool, consumeApproval, dailyCheck, requestApproval, resolveApproval, markRead, ruleInForce, tickToday } from '../server/tools.mjs';
@@ -255,6 +255,10 @@ async function startWatch(opts = {}) {
       const m = morningRun(store);
       if (m?.run) notify(store, `Morning run: the commander is looking at ${m.need.join(', ')}.`);
     } catch (e) { console.error(`morning run: ${e.message}`); }
+    try {
+      const c = commanderCall(store);
+      if (c?.run) notify(store, `The commander is looking at ${c.waiting} message${c.waiting > 1 ? 's' : ''} from the team.`);
+    } catch (e) { console.error(`commander call: ${e.message}`); }
     autoFindSkills(store).then((added) => { if (added.length) notify(store, `Skill suggestion${added.length > 1 ? 's' : ''} on your page: ${added.map((s) => s.skill).join(', ')}.`); }, () => {});
     redraw();
   };
@@ -633,6 +637,19 @@ switch (cmd) {
       }
       if (list.some((a) => !a.active && !a.off)) console.log('\nRead the commands above, then approve one with: war-room addon --name NAME --approve');
     } catch (e) { console.error(e.message); process.exitCode = 1; }
+    break;
+  }
+  case 'commander': {
+    // Which chat is the commander's brain: war-room commander [--agent claude|codex|gemini|cursor] [--model name]
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    const { commanderBrain, recipes } = await import('../server/agents.mjs');
+    const a = flag('agent'), m = flag('model');
+    if (a || m) {
+      if (a && !(recipes()[a] || {}).work) { console.error(`"${a}" cannot run background work. Pick one of: ${Object.entries(recipes()).filter(([, v]) => v.work).map(([k]) => k).join(', ')}.`); process.exitCode = 1; break; }
+      fs.writeFileSync(`${store.root}/config.json`, JSON.stringify({ ...store.config(), ...(a ? { commanderAgent: a } : {}), ...(m ? { commanderModel: m } : {}) }, null, 2));
+    }
+    const b = commanderBrain(store);
+    console.log(b.error || `The commander "${store.config().commander}" thinks with ${b.agent}${b.model ? ` (${b.model})` : ''}.`);
     break;
   }
   case 'morning': {

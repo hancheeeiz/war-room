@@ -236,3 +236,48 @@ test('review fixes: no wake-up for the daily summary alone, no restart while wai
   const guard = spawnSync(process.execPath, [CLI, 'hook-guard'], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'war-room morning' } }), encoding: 'utf8', env: { ...env, WAR_ROOM_DIR: '/nonexistent' } }).stdout;
   assert.match(guard, /extra paid commander run/);
 });
+
+test('the commander is woken for a team report, with a gap, a daily cap, and the brain you chose', async () => {
+  const dir = project({ commanderGapMin: 0, commanderWakesPerDay: 2 });
+  call(dir, 'war_room_brief', { agent: 'commander' });
+  const { commanderCall } = await import(`${ROOT}/server/engine.mjs`);
+  const { Store } = await import(`${ROOT}/server/store.mjs`);
+  const PATH = process.env.PATH;
+  process.env.PATH = env.PATH;
+  try {
+    const store = new Store(path.join(dir, '.warroom'));
+    assert.equal(commanderCall(store), null, 'nothing waiting');
+    call(dir, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: 'hello' });
+    assert.equal(commanderCall(store), null, 'the founder\'s own words are handled by the page, not this');
+    call(dir, 'post_message', { agent: 'builder', to: 'commander', kind: 'handoff', text: 'Task t1 reported done' });
+    const c = commanderCall(store);
+    assert.ok(c.run, 'woken for a report');
+    assert.equal(c.waiting, 1);
+    await until(() => /claude\|commander\|.*woken because your team reported/.test(calls()));
+    // A second wake while the first is still running does nothing.
+    assert.equal(commanderCall(store), null);
+    // Another brain: set from the command line, used on the next wake.
+    assert.match(run(dir, 'commander', '--agent', 'codex').stdout, /thinks with codex/);
+    assert.match(run(dir, 'commander', '--agent', 'nope').stderr, /cannot run background work/);
+    await new Promise((r) => setTimeout(r, 4300)); // the fake claude run ends
+    const c2 = commanderCall(store);
+    assert.ok(c2.run, 'woken again');
+    await until(() => /codex\|commander\|/.test(calls()));
+    await new Promise((r) => setTimeout(r, 4300));
+    assert.match(commanderCall(store).skipped, /already woke the commander 2 times today/, 'the daily cap stops a loop');
+    config(dir, { commanderWake: false });
+    assert.equal(commanderCall(store), null, 'off switch');
+  } finally { process.env.PATH = PATH; }
+});
+
+test('the page shows the conversation with the commander and which brain it uses', async () => {
+  const dir = project({ commanderAgent: 'codex' });
+  call(dir, 'post_message', { agent: 'founder', to: 'commander', kind: 'info', text: 'Founder: make the intro shorter' });
+  call(dir, 'read_messages', { agent: 'commander', close: [1], reply: 'Done: intro is 20 seconds now' });
+  const { Store } = await import(`${ROOT}/server/store.mjs`);
+  const { renderDashboard } = await import(`${ROOT}/server/dashboard.mjs`);
+  const html = renderDashboard(new Store(path.join(dir, '.warroom')));
+  assert.match(html, /thinks with codex/);
+  assert.match(html, /make the intro shorter/);
+  assert.match(html, /Done: intro is 20 seconds now/);
+});

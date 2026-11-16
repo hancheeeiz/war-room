@@ -9,6 +9,7 @@ import { addonList } from './addons.mjs';
 import { chains, dutyOf, isReady, stepState } from './relay.mjs';
 import { KNOWN, SKILL, SOURCE, installedSkills, skillUrl } from './skills.mjs';
 import path from 'node:path';
+import { changedFiles, projectMapSvg, scanProjectCached, teamMapSvg } from './map.mjs';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const pct = (n, d) => (d ? Math.round((n / d) * 100) : 0);
@@ -133,6 +134,14 @@ export function renderDashboard(store, { live = false } = {}) {
       ${task ? `<span class="n-task">${task.after ? `<b>${esc(task.id)}</b> after ${esc(task.after)} · ` : `<b>${esc(task.id)}</b> · `}${esc(task.title)}</span>` : m.does ? `<span class="n-task">${esc(m.does)}</span>` : ''}
       <span class="n-foot">${done} done</span></button>`;
   }).join('');
+  // ── The map tab: the team (from the war room's records) and the project's folders (with the team's recent work marked) ──
+  const mapMembers = names.map((name) => { const m = team.find((x) => x.name === name) || { name, role: 'Helper chat' }; const [state, label, task] = memberState(name); const run = runs.filter((r) => r.name === name).pop(); return { name, role: m.role, company: company(m.use || run?.agent || 'claude'), state, label, task: task?.id }; });
+  let projectMap;
+  try { projectMap = projectMapSvg(scanProjectCached(path.dirname(store.root)), changedFiles(tasks)); } catch (e) { projectMap = `<p class="note">Could not draw the project map: ${esc(e.message)}</p>`; }
+  const mapPane = `<section class="card"><div class="card-h"><h2>Who works with whom</h2><span class="meta">${mapMembers.length} chat${mapMembers.length === 1 ? '' : 's'}</span></div>
+    <p class="why">Drawn from the war room's own records, so it is always current. Dashed lines are hand-offs: the next step starts when the one before is checked.</p>${teamMapSvg({ commander: cfg.commander, members: mapMembers, tasks, brain: cfg.commanderAgent || 'claude' })}</section>
+    <section class="card"><div class="card-h"><h2>How the project is building</h2></div>
+    <p class="why">The project's folders and which ones use each other. Green and yellow mark what the team reported, had checked or is working on. Nothing leaves this computer.</p>${projectMap}</section>`;
   // ── The step board: every chain of steps still running, each step with who has it and where it is now ──
   const progress = store.read('progress');
   const stepBox = (t) => {
@@ -178,8 +187,13 @@ export function renderDashboard(store, { live = false } = {}) {
     const m = q.text.match(/^(.*) \(suggested: (.*)\)$/s);
     return `<div class="ask" data-q="${esc(q.id)}" data-sug="${esc(m ? m[2] : '')}"><span class="ask-k">Commander asks</span><span class="ask-t">${esc(m ? m[1] : q.text)}</span>${m ? `<span class="ask-s">Suggested: ${esc(m[2])}</span>` : ''}<span class="ask-go">Answer →</span></div>`;
   }).join('');
-  const talk = `<section class="card talk"><div class="card-h"><h2>Tell the commander</h2></div>
+  // The conversation: what you said and what the commander answered (the reply it left when it closed your message).
+  const said = store.read('messages').filter((m) => m.from === 'founder' && m.to === 'commander' && /^Founder( answered [\w-]+)?: /.test(m.text)).slice(-5);
+  const brain = cfg.commanderAgent || 'claude';
+  const thread = said.length ? `<div class="thread">${said.map((m) => `<div class="bub me"><span class="bub-k">You · ${esc(String(m.date).slice(5, 16).replace('T', ' '))}</span>${esc(m.text.replace(/^Founder( answered [\w-]+)?: /, ''))}</div>${m.reply ? `<div class="bub cmd"><span class="bub-k">Commander</span>${esc(m.reply)}</div>` : `<div class="bub cmd wait"><span class="bub-k">Commander</span>${m.open ? (cmdBusy ? 'Reading it now…' : 'Has it. It will answer here.') : 'Done.'}</div>`}`).join('')}</div>` : '';
+  const talk = `<section class="card talk"><div class="card-h"><h2>Tell the commander</h2><span class="meta">thinks with ${esc(brain)}${cfg.commanderModel ? ` · ${esc(cfg.commanderModel)}` : ''}</span></div>
     ${qChips ? `<div class="asks">${qChips}</div>` : ''}
+    ${thread}
     <div class="to-row"><span class="to-k">To</span><span id="toLabel" class="to-v">Commander</span><button type="button" class="link small" id="toReset" hidden>back to commander</button></div>
     <textarea id="say" placeholder="Anything in your own words: a goal, an idea, a change of mind, a worry."></textarea>
     <div class="row"><button class="send" type="button" id="sayBtn">Send</button><span class="note out" id="sayOut"></span></div>
@@ -347,7 +361,8 @@ h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute
 .tabs{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:4px;padding:4px;background:var(--surface);border:1px solid var(--line);border-radius:12px;min-width:240px}
 @media (max-width:860px){.tabs{width:100%;position:sticky;top:8px;z-index:3}}
 .tabs button{border:0;background:none;color:var(--muted);padding:9px;border-radius:9px;font-weight:600}
-.tabs button.on{background:var(--accent);color:var(--accent-ink)}.tab-n{font-family:var(--mono);font-size:11px;opacity:.75}
+.tabs button.on{background:var(--accent);color:var(--accent-ink)}.mapsvg{width:100%;height:auto;display:block;margin:6px 0}.mapsvg .nt{font:600 13px system-ui,sans-serif;fill:#fff}.mapsvg .ns{font:11px system-ui,sans-serif;fill:#a0a0ad}.mapsvg .el{font:10.5px system-ui,sans-serif;fill:#a0a0ad}.lgs{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--muted);margin-top:4px}.lg i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}.lg i.dash{border-radius:0;height:0;border-top:2px dashed #a78bfa;width:16px;background:none}
+.tab-n{font-family:var(--mono);font-size:11px;opacity:.75}
 .shelf{display:grid;gap:18px}
 .spine{font:inherit;color:var(--ink);text-align:left;display:grid;gap:2px;width:100%;border:0;border-top:1px solid var(--line);background:none;padding:11px 0}.spine:first-of-type{border-top:0;padding-top:2px}.spine:hover .spine-t{color:var(--accent)}.spine-t{font-weight:600;font-size:15.5px;overflow-wrap:anywhere}
 .book{max-width:820px;width:100%;margin:0 auto;padding:22px clamp(16px,4vw,40px) 26px}
@@ -367,7 +382,8 @@ button.tick{padding:0;background:none;cursor:pointer}button.tick:hover{backgroun
 .why{color:var(--muted);font-size:13px;margin:0 0 12px}.talk .why{margin:10px 0 0}
 .asks{display:grid;gap:8px;margin-bottom:12px}
 .ask{display:grid;gap:2px;text-align:left;border:1px solid #e2a64f55;background:#e2a64f0d;border-radius:10px;padding:9px 12px;cursor:pointer}.ask.on{border-color:var(--warn);box-shadow:0 0 0 1px var(--warn) inset}
-.ask-k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--warn);font-weight:600}.ask-t{font-weight:600}.ask-s{font-size:12.5px;color:var(--muted)}.ask-go{font-size:12.5px;color:var(--accent)}
+.ask-k{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--warn);font-weight:600}.ask-t{font-weight:600}.ask-s{font-size:12.5px;color:var(--muted)}.thread{display:flex;flex-direction:column;gap:6px;margin:8px 0}.bub{max-width:92%;padding:8px 11px;border-radius:12px;font-size:14px;line-height:1.4}.bub-k{display:block;font-size:11px;opacity:.6;margin-bottom:2px}.bub.me{align-self:flex-end;background:var(--accent-soft,#2a2a38)}.bub.cmd{align-self:flex-start;background:var(--card2,#1e1e27)}.bub.wait{opacity:.7}
+.ask-go{font-size:12.5px;color:var(--accent)}
 .to-row{display:flex;gap:8px;align-items:baseline;margin-bottom:6px;font-size:13px}.to-k{color:var(--muted)}.to-v{font-weight:600;color:var(--accent)}.link.small{padding:0;font-size:12.5px}
 .talk textarea{min-height:84px}
 .org{display:grid;gap:22px;position:relative}
@@ -441,10 +457,11 @@ ul.daily li{display:flex;gap:10px;align-items:flex-start;padding:6px 0}ul.daily 
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style></head><body><div class="wrap">
 <header class="top"><div><div class="eyebrow">WAR ROOM</div><h1>${esc(cfg.project)}</h1><div class="sub">${esc(now())}${live ? ' · live' : ' · snapshot'}</div><div class="pills">${pills}</div></div>
-<nav class="tabs"><button type="button" class="on" data-go="main">Main</button>${showShelf ? `<button type="button" data-go="shelf">Shelf${shelf.length ? ` <span class="tab-n">${shelf.length}</span>` : ''}</button>` : ''}<button type="button" data-go="details">Details</button></nav></header>
+<nav class="tabs"><button type="button" class="on" data-go="main">Main</button>${showShelf ? `<button type="button" data-go="shelf">Shelf${shelf.length ? ` <span class="tab-n">${shelf.length}</span>` : ''}</button>` : ''}<button type="button" data-go="map">Map</button><button type="button" data-go="details">Details</button></nav></header>
 <ol class="how"><li><b>1</b>Tell the commander what you want, in any words.</li><li><b>2</b>It hands each job to the right team member and checks the work.</li><li><b>3</b>You only step in to answer a question or approve a risky step (push, deploy, money, deleting).</li></ol>
 <div class="pane on" id="main">${mainPane}</div>
 <div class="pane" id="shelf">${shelfPane}</div>
+<div class="pane" id="map">${mapPane}</div>
 <div class="pane" id="details">${details}</div>
 </div>
 <script>

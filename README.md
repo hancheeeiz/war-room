@@ -12,7 +12,7 @@ Every background chat is started with one of three access levels:
 | `edit` | also change files (the default) | commander |
 | `run` | also run commands | only you: `war-room access NAME run` (signed, so a project file cannot fake it) |
 
-`war-room access` lists them. The commander itself has `run`. Claude Code enforces all three levels. Codex enforces `read` (its read-only sandbox); its `edit` can still run commands inside its own sandbox. Gemini uses its plan and auto-edit modes (not tested with a real run). Cursor cannot be limited, so it starts only with `run`. Chats you open yourself in an app keep that app's permissions.
+Only one background chat per name runs at a time: a second start is refused, even if the page, the engine and a chat ask at the same moment. `war-room access` lists them. The commander itself has `run`. Claude Code enforces all three levels. Codex enforces `read` (its read-only sandbox); its `edit` can still run commands inside its own sandbox. Gemini uses its plan and auto-edit modes (not tested with a real run). Cursor cannot be limited, so it starts only with `run`. Chats you open yourself in an app keep that app's permissions.
 
 ## The guard
 

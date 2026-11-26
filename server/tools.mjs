@@ -831,6 +831,7 @@ function autoStart(store, t) {
     const run = startWorker(store, { name: t.agent, agent: member.use || 'claude', model: member.model });
     return `Started ${t.agent} (${run.id}); its report lands in your inbox.`;
   } catch (e) {
+    if (e.code === 'ALREADY_RUNNING') return `${t.agent} is already running and will take it.`;
     autoRemember(store, { kind: 'problem', text: `Could not start ${t.agent} for ${t.id}: ${e.message}`, source: 'war-room', tags: [t.id] });
     return `Could not start ${t.agent}: ${e.message}`;
   }
@@ -953,6 +954,7 @@ export function startNextSteps(store, doneId) {
     try {
       started.push(startWorker(store, { name: t.agent, agent: member?.use || last?.agent || 'claude', model: member?.model || last?.model }));
     } catch (e) {
+      if (e.code === 'ALREADY_RUNNING') continue;
       autoRemember(store, { kind: 'problem', text: `Could not start ${t.agent} for the next step ${t.id}: ${e.message}`, source: 'war-room', tags: [t.id] });
     }
   }

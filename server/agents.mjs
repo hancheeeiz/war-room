@@ -165,17 +165,21 @@ export function startWorker(store, { name, agent = 'claude', model, prompt }) {
   const cmd = commandFor(seat, mode, (prompt || workerPrompt(name)) + limit);
   if (agent === 'claude' && !claudeHasPluginInstalled()) cmd.args.push('--plugin-dir', PLUGIN_ROOT);
   const project = path.dirname(store.root);
-  fs.mkdirSync(path.join(store.root, 'runs'), { recursive: true });
-  const log = path.join(store.root, 'runs', `${name}-${Date.now()}.log`);
-  const fd = fs.openSync(log, 'a');
-  if (!which(cmd.bin)) { fs.closeSync(fd); throw new Error(`${agent} is not installed on this computer (no "${cmd.bin}" command found).`); }
-  const ls = launchSpec(cmd.bin, cmd.args);
-  const child = spawn(ls.bin, ls.args, { ...ls.opts, cwd: project, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, WAR_ROOM_AGENT: name, WAR_ROOM_DIR: project } });
-  // A start that fails later must not take the page and watcher down with it.
-  child.on('error', (e) => { try { fs.appendFileSync(log, `\nCould not start: ${e.message}\n`); } catch {} });
-  child.unref();
-  fs.closeSync(fd);
+  // One chat per name. The check and the start happen under the war room's lock, so the page, the engine and a
+  // chat asking at the same moment cannot start two copies that edit the same files.
   return store.update('runs', (runs) => {
+    const going = runs.filter((r) => r.name === name).pop();
+    if (going && runStatus(going) === 'running') throw Object.assign(new Error(`${name} is already running (${going.id}), so a second copy was not started. It reads new messages and tasks itself.`), { code: 'ALREADY_RUNNING' });
+    fs.mkdirSync(path.join(store.root, 'runs'), { recursive: true });
+    const log = path.join(store.root, 'runs', `${name}-${Date.now()}.log`);
+    const fd = fs.openSync(log, 'a');
+    if (!which(cmd.bin)) { fs.closeSync(fd); throw new Error(`${agent} is not installed on this computer (no "${cmd.bin}" command found).`); }
+    const ls = launchSpec(cmd.bin, cmd.args);
+    const child = spawn(ls.bin, ls.args, { ...ls.opts, cwd: project, detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, WAR_ROOM_AGENT: name, WAR_ROOM_DIR: project } });
+    // A start that fails later must not take the page and watcher down with it.
+    child.on('error', (e) => { try { fs.appendFileSync(log, `\nCould not start: ${e.message}\n`); } catch {} });
+    child.unref();
+    fs.closeSync(fd);
     const run = { id: nextId(runs, 'r'), name, agent, model, access, company: cmd.company, pid: child.pid, started: now(), startedMs: Date.now(), log: path.relative(project, log) };
     runs.push(run);
     store.log({ agent: 'war-room', event: 'worker_started', id: run.id, text: `${name} (${agent}${model ? ` ${model}` : ''})` });

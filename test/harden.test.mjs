@@ -79,3 +79,23 @@ test('chats are limited by access level; only a founder grant gives "run", and i
   assert.match(args('read', 'codex'), /--sandbox read-only/);
   assert.throws(() => commandFor({ agent: 'cursor' }, 'edit', 'p'), /cannot be used/);
 });
+
+test('one chat per name: a second start is refused, even when several ask at once', async () => {
+  const { spawn } = await import('node:child_process');
+  const dir = tmp('war-room-twice-');
+  const bin = tmp('war-room-twicebin-');
+  fs.writeFileSync(path.join(bin, 'claude'), '#!/bin/sh\nsleep 6\n');
+  fs.chmodSync(path.join(bin, 'claude'), 0o755);
+  const e = { ...env, WAR_ROOM_DIR: dir, PATH: `${bin}${path.delimiter}${process.env.PATH}` };
+  spawnSync(process.execPath, [CLI, 'init', '--project', 'demo'], { cwd: dir, env: e });
+  const start = () => new Promise((resolve) => {
+    const p = spawn(process.execPath, [CLI, 'spawn', 'writer'], { cwd: dir, env: e });
+    let out = '';
+    p.stdout.on('data', (d) => { out += d; }); p.stderr.on('data', (d) => { out += d; });
+    p.on('close', () => resolve(out));
+  });
+  const outs = await Promise.all([start(), start(), start(), start()]);
+  assert.equal(outs.filter((o) => /worker "writer" started/.test(o)).length, 1, outs.join('\n'));
+  assert.equal(outs.filter((o) => /already running/.test(o)).length, 3, outs.join('\n'));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.warroom', 'runs.json'), 'utf8')).length, 1);
+});

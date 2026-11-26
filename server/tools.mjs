@@ -964,7 +964,7 @@ TOOLS.push(
   {
     name: 'hire',
     description: 'Commander only: add (or update) one member of the founder\'s team: a named role such as "designer", "backend", "seo" or "reviewer", with what it does and which coding agent runs it. The page shows the team as a chart; tasks are handed to these names (create_task assignTo) and start_worker uses the agent and model set here.',
-    inputSchema: { type: 'object', properties: { agent: AGENT, name: str('Short name, e.g. "designer". Letters, numbers, dash.'), role: str('Job title in plain words, e.g. "Screen designer".'), does: str('One line: what this role does for the founder.'), use: str('Coding agent: claude (default), codex, gemini or cursor. Mixing companies gives better arguments.'), model: str('Optional model, e.g. "sonnet" for routine work, "opus" for hard work.'), remove: { type: 'boolean', description: 'Remove this member from the team.' } }, required: ['agent', 'name'] },
+    inputSchema: { type: 'object', properties: { agent: AGENT, name: str('Short name, e.g. "designer". Letters, numbers, dash.'), role: str('Job title in plain words, e.g. "Screen designer".'), does: str('One line: what this role does for the founder.'), use: str('Coding agent: claude (default), codex, gemini or cursor. Mixing companies gives better arguments.'), model: str('Optional model, e.g. "sonnet" for routine work, "opus" for hard work.'), access: { type: 'string', enum: ['read', 'edit'], description: 'What its background chat may do: read (look and report, e.g. a reviewer) or edit (change files; the default). Running commands is only for the founder to give: war-room access NAME run.' }, remove: { type: 'boolean', description: 'Remove this member from the team.' } }, required: ['agent', 'name'] },
     run: (store, a) => {
       needCommander(store, a.agent);
       if (!/^[\w.-]{1,40}$/.test(a.name)) throw new Refused('Name: letters, numbers, dot, dash or underscore only.');
@@ -979,6 +979,10 @@ TOOLS.push(
         }
         if (i < 0 && !a.role) throw new Refused('A new member needs a role.');
         const m = { ...(team[i] || { joined: now() }), name: a.name, ...(a.role && { role: a.role }), ...(a.does && { does: a.does }), ...(a.use && { use: a.use }), ...(a.model && { model: a.model }) };
+        if (a.access) {
+          if (!['read', 'edit'].includes(a.access)) throw new Refused('You can set access read or edit. Only the founder can give "run": war-room access NAME run.');
+          m.access = a.access; delete m.grant;
+        }
         if (i < 0) team.push(m); else team[i] = m;
         store.log({ agent: a.agent, event: i < 0 ? 'hired' : 'team_updated', text: `${m.name}: ${m.role}` });
         const fit = matchSkills(`${m.name} ${m.role} ${m.does || ''}`, installedSkills(path.dirname(store.root))).filter((x) => x.strong);

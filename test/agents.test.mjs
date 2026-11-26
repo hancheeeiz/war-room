@@ -83,7 +83,7 @@ test('workers: the commander starts a background chat that knows its name', asyn
   assert.equal(out.status, 0, out.stderr);
   const calls = await until(() => { try { return fs.readFileSync(path.join(HOME, 'claude-calls.txt'), 'utf8').split('\n').find((l) => l.startsWith('frontend|')); } catch { return null; } });
   assert.match(calls, /You are "frontend" in the war room/);
-  assert.match(calls, /--permission-mode acceptEdits --allowedTools Bash,mcp__war-room,mcp__plugin_war-room_war-room --model sonnet/);
+  assert.match(calls, /--permission-mode acceptEdits --allowedTools Read,Grep,Glob,mcp__war-room,mcp__plugin_war-room_war-room --disallowedTools Bash,Agent,Task --model sonnet/);
   assert.match(calls, /--plugin-dir/);
   const runs = JSON.parse(fs.readFileSync(path.join(dir, '.warroom/runs.json'), 'utf8'));
   assert.equal(runs[0].name, 'frontend');

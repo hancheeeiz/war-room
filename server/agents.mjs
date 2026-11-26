@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { nextId, now, userConfig } from './store.mjs';
+import { nextId, now, userConfig, sign, verify } from './store.mjs';
 import { mayStartCli } from './relay.mjs';
 
 export const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -15,11 +15,13 @@ export const CLI = path.join(PLUGIN_ROOT, 'bin', 'war-room.mjs');
 // given. "ask" answers read-only (debates); "work" may edit files (worker chats). Only Claude Code also gets the
 // war-room guard hook; the others rely on their own approval settings.
 const RECIPES = {
-  claude: { company: 'Anthropic', bin: 'claude', ask: ['-p', '{prompt}', '--tools', 'Read,Grep,Glob', '--model', '{model}'], work: ['-p', '{prompt}', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash,mcp__war-room,mcp__plugin_war-room_war-room', '--model', '{model}'], models: ['opus', 'sonnet', 'haiku'] },
-  codex: { company: 'OpenAI', bin: 'codex', ask: ['exec', '-c', 'model="{model}"', '{prompt}'], work: ['exec', '--full-auto', '-c', 'model="{model}"', '{prompt}'] },
+  claude: { company: 'Anthropic', bin: 'claude',
+    read: ['-p', '{prompt}', '--permission-mode', 'default', '--allowedTools', 'Read,Grep,Glob,mcp__war-room,mcp__plugin_war-room_war-room', '--disallowedTools', 'Bash,Write,Edit,MultiEdit,NotebookEdit,Agent,Task', '--model', '{model}'],
+    edit: ['-p', '{prompt}', '--permission-mode', 'acceptEdits', '--allowedTools', 'Read,Grep,Glob,mcp__war-room,mcp__plugin_war-room_war-room', '--disallowedTools', 'Bash,Agent,Task', '--model', '{model}'], ask: ['-p', '{prompt}', '--tools', 'Read,Grep,Glob', '--model', '{model}'], work: ['-p', '{prompt}', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash,mcp__war-room,mcp__plugin_war-room_war-room', '--model', '{model}'], models: ['opus', 'sonnet', 'haiku'] },
+  codex: { company: 'OpenAI', bin: 'codex', read: ['exec', '--sandbox', 'read-only', '-c', 'model="{model}"', '{prompt}'], edit: ['exec', '--full-auto', '-c', 'model="{model}"', '{prompt}'], ask: ['exec', '-c', 'model="{model}"', '{prompt}'], work: ['exec', '--full-auto', '-c', 'model="{model}"', '{prompt}'] },
   // Gemini refuses headless runs in a folder it was not told to trust; --skip-trust trusts this project for the run.
   // "plan" is its read-only mode; workers may edit files (auto_edit) but still ask before shell commands.
-  gemini: { company: 'Google', bin: 'gemini', ask: ['--skip-trust', '--approval-mode', 'plan', '-m', '{model}', '-p', '{prompt}'], work: ['--skip-trust', '--approval-mode', 'auto_edit', '-m', '{model}', '-p', '{prompt}'] },
+  gemini: { company: 'Google', bin: 'gemini', read: ['--skip-trust', '--approval-mode', 'plan', '-m', '{model}', '-p', '{prompt}'], edit: ['--skip-trust', '--approval-mode', 'auto_edit', '-m', '{model}', '-p', '{prompt}'], ask: ['--skip-trust', '--approval-mode', 'plan', '-m', '{model}', '-p', '{prompt}'], work: ['--skip-trust', '--approval-mode', 'auto_edit', '-m', '{model}', '-p', '{prompt}'] },
   cursor: { company: 'Cursor', bin: 'cursor-agent', ask: ['-p', '--mode', 'ask', '--model', '{model}', '--output-format', 'text', '{prompt}'], work: ['-p', '--model', '{model}', '--output-format', 'text', '{prompt}'] },
   ollama: { company: 'local (Ollama)', bin: 'ollama', ask: ['run', '{model}', '{prompt}'], needsModel: true },
 };
@@ -120,10 +122,47 @@ export function commanderPrompt(name) {
   return `You are "${name}", the war-room commander, started in the background because the founder wrote on the war-room page. Call war_room_brief with agent "${name}", then read_messages. For each founder message: if memory or the plan already answers it, act on it; if it is new work, route it — pick the right team member (hire one if the role is missing), create_task with a clear done check, then start_worker for that member; if it answers a question, record it; if you need a decision, ask_founder with one plain question and your suggested answer. Close each message with read_messages close=[ids] and a one-line reply saying what you did, in plain words. Do not build things yourself; your job is to route and check. Never push, deploy, publish, delete data or spend money.`;
 }
 
+// ── What a background chat may do ────────────────────
+// read: look and report. edit: also change files. run: also run commands. A chat can be limited by the commander
+// (hire access read|edit); only the founder can give "run", and the grant is signed so a project file cannot fake it.
+export const ACCESS = ['read', 'edit', 'run'];
+const grantText = (store, name) => `access:${path.resolve(store.root)}:${name}:run`;
+
+export function accessOf(store, name) {
+  const cfg = store.config();
+  if (name === cfg.commander) return ACCESS.includes(cfg.commanderAccess) ? cfg.commanderAccess : 'run';
+  const m = store.read('team').find((x) => x.name === name);
+  if (m?.grant && verify(grantText(store, name), m.grant)) return 'run';
+  if (m?.access === 'read' || m?.access === 'edit') return m.access;
+  const open = store.read('tasks').filter((t) => t.agent === name && t.status !== 'verified');
+  return open.length && open.every((t) => t.review) ? 'read' : 'edit';
+}
+
+export function setAccess(store, name, level) {
+  const team = store.read('team');
+  if (!name) return team.length ? team.map((m) => `${m.name.padEnd(20)} ${accessOf(store, m.name)}`).join('\n') : 'No team yet.';
+  if (!team.some((m) => m.name === name)) throw new Error(`No team member ${name}.`);
+  if (level) {
+    if (!ACCESS.includes(level)) throw new Error('Access is read, edit or run.');
+    store.update('team', (list) => {
+      const m = list.find((x) => x.name === name);
+      delete m.grant; delete m.access;
+      if (level === 'run') m.grant = sign(grantText(store, name)); else m.access = level;
+    });
+    store.log({ agent: 'founder', event: 'access_set', text: `${name}: ${level}` });
+  }
+  return `${name}: ${accessOf(store, name)}`;
+}
+
 export function startWorker(store, { name, agent = 'claude', model, prompt }) {
   if (!/^[\w.-]{1,40}$/.test(name)) throw new Error('Worker name: letters, numbers, dot, dash or underscore only.');
   const seat = { agent, model };
-  const cmd = commandFor(seat, 'work', prompt || workerPrompt(name));
+  const access = accessOf(store, name);
+  const known = recipes()[agent];
+  const mode = access === 'run' ? 'work' : access;
+  if (known && !known[mode]) throw new Error(`${agent} cannot be limited to "${access}" access, so it was not started. The founder can allow it with: war-room access ${name} run`);
+  const limit = access === 'run' ? '' : ` You were started with "${access}" access (${access === 'read' ? 'look and report only' : 'you may change files but not run commands'}). If the done check needs more, put it in notVerified and post_message to the commander; only the founder can widen it (war-room access ${name} run).`;
+  const cmd = commandFor(seat, mode, (prompt || workerPrompt(name)) + limit);
   if (agent === 'claude' && !claudeHasPluginInstalled()) cmd.args.push('--plugin-dir', PLUGIN_ROOT);
   const project = path.dirname(store.root);
   fs.mkdirSync(path.join(store.root, 'runs'), { recursive: true });
@@ -137,7 +176,7 @@ export function startWorker(store, { name, agent = 'claude', model, prompt }) {
   child.unref();
   fs.closeSync(fd);
   return store.update('runs', (runs) => {
-    const run = { id: nextId(runs, 'r'), name, agent, model, company: cmd.company, pid: child.pid, started: now(), startedMs: Date.now(), log: path.relative(project, log) };
+    const run = { id: nextId(runs, 'r'), name, agent, model, access, company: cmd.company, pid: child.pid, started: now(), startedMs: Date.now(), log: path.relative(project, log) };
     runs.push(run);
     store.log({ agent: 'war-room', event: 'worker_started', id: run.id, text: `${name} (${agent}${model ? ` ${model}` : ''})` });
     return run;

@@ -4,7 +4,7 @@
       { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/war-room.mjs\" hook-session-start" }] }
     ],
     "PreToolUse": [
-      { "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|mcp__.*", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/war-room.mjs\" hook-guard" }] }
+      { "matcher": "Bash|Read|Grep|Write|Edit|MultiEdit|NotebookEdit|mcp__.*", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/guard.mjs\"" }] }
     ]
   }
 }

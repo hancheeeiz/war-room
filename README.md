@@ -2,6 +2,22 @@
 
 You talk to one commander, like the boss of a small AI company. You say what you want in plain words; it remembers everything you decide, plans the work, hires a team of named roles (designer, backend, reviewer…) and hands each job to the right one, has AI agents from different companies argue about hard choices, shows progress on one page, and asks for your yes before anything risky.
 
+## What a team member may do
+
+Every background chat is started with one of three access levels:
+
+| Level | It may | Who sets it |
+|---|---|---|
+| `read` | look and report | commander (`hire` access `read`); a member with only review tasks gets it automatically |
+| `edit` | also change files (the default) | commander |
+| `run` | also run commands | only you: `war-room access NAME run` (signed, so a project file cannot fake it) |
+
+`war-room access` lists them. The commander itself has `run`. Claude Code enforces all three levels. Codex enforces `read` (its read-only sandbox); its `edit` can still run commands inside its own sandbox. Gemini uses its plan and auto-edit modes (not tested with a real run). Cursor cannot be limited, so it starts only with `run`. Chats you open yourself in an app keep that app's permissions.
+
+## The guard
+
+Before a Claude Code tool call, the guard asks for your yes on risky steps, including what a package script or shell script would run, code typed into an interpreter that deletes files, reading secret files, and changes to another agent's safety settings. If it cannot check an action (bad input, broken or half-updated plugin files), it blocks it; switch the plugin off if you need to work without it. It cannot see everything: a program can build a command while running, script files in other languages are not read, and if Node itself is missing the hook cannot run. Access levels are the stronger limit.
+
 ## Start in 3 steps
 
 1. In Claude Code, install it (once):

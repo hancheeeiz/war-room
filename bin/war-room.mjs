@@ -7,65 +7,15 @@ import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
 import { addonList, approveAddon, startAddons } from '../server/addons.mjs';
 import { decideSkill, installedSkills } from '../server/skills.mjs';
 import { LABEL, autoFindSkills, commanderCall, enginePidFile, enginePath, engineRunning, loginItem, morningRun, vbsText, plistPath, plistText, register, registered, sweepWork, tidyInbox, unregister } from '../server/engine.mjs';
-import { resumeAfterApproval, shellSpec, wakeCommander, wakeMember } from '../server/agents.mjs';
+import { resumeAfterApproval, setAccess, shellSpec, wakeCommander, wakeMember } from '../server/agents.mjs';
+import { runGuardSafely } from '../server/guard.mjs';
+import { notify } from '../server/notify.mjs';
 import { STARTER_RULES, starterRules } from '../server/starter-rules.mjs';
-import { autoRemember, brief, callTool, consumeApproval, dailyCheck, requestApproval, resolveApproval, markRead, ruleInForce, tickToday } from '../server/tools.mjs';
+import { autoRemember, brief, callTool, dailyCheck, resolveApproval, markRead, ruleInForce, tickToday } from '../server/tools.mjs';
 
 const [cmd, ...rest] = process.argv.slice(2);
 const flag = (name, dflt) => { const i = rest.indexOf(`--${name}`); return i >= 0 ? rest[i + 1] : dflt; };
 const store = new Store();
-
-// Actions that always need the founder's yes at that step, whatever permissions the agent has.
-const FOUNDER_YES = [
-  [/\bgit\b[^|;&\n]*?\bpush\b/, 'git push'],
-  // An agent must never answer for the founder or rewrite the war room's approvals and settings.
-  // Switching the guard itself off is a founder decision too.
-  [/\bclaude\s+(plugin|plugins|mcp)\s+(disable|uninstall|remove|rm)\b|\.claude\/(settings[^\s/]*\.json|plugins\/)|hooks\/hooks\.json/, 'switching off or changing the safety guard'],
-  // Any shell command that touches .warroom or names the approvals file asks first (covers cd, cp, node -e …).
-  [/\bwar-room(\.mjs)?\b[^|;&\n]*\b(approve|answer|founder_answer|decide_goal|confirm-rules|tick|read|addon)\b|\bwar-room(\.mjs)?\b[^|;&\n]*\brules\s+--o(ff|n)\b|\.warroom\b|\bapprovals\.json\b|\.config\/war-room\b|\bWAR_ROOM_HOME\b/, 'approving, answering for the founder, or changing war-room files'],
-  // Task tools from the shell would let one chat take, report or check work under another chat's name.
-  [/\bwar-room(\.mjs)?\b[^|;&\n]*\bcall\s+['"]?(get_task_packet|report_done|verify_task|create_task|reassign_task)\b/, 'taking, reporting or checking a task from the shell (each role works in its own chat)'],
-  [/\b(firebase|vercel|netlify|fly|flyctl|wrangler|eas|amplify|gcloud|aws|heroku|render)\b[^|;&]*\b(deploy|publish|submit)\b|--prod\b|\bkubectl\s+(apply|delete|rollout|scale)\b|\bterraform\s+(apply|destroy)\b|\bdocker\s+push\b|\bsupabase\s+(db\s+push|functions\s+deploy)\b|\brailway\s+up\b/, 'deploy'],
-  [/\b(npm|pnpm|yarn|bun)\s+publish\b|\bcargo\s+publish\b|\btwine\s+upload\b|\bgem\s+push\b|\bpod\s+trunk\s+push\b|\bgh\s+release\s+(create|upload|edit)\b|\bgh\s+repo\s+(create|edit|rename|archive)\b|\bgh\s+pr\s+merge\b/, 'publishing'],
-  // Connecting another agent changes that tool's own settings files.
-  [/\bwar-room(\.mjs)?\b[^|;&\n]*\bconnect\b/, 'connecting another agent (changes its settings)'],
-  [/\bosascript\b[^|;&]*\b(send|Messages|Mail)\b|\b(sendmail|mailx?)\s|hooks\.slack\.com|discord(app)?\.com\/api\/webhooks|api\.telegram\.org|\bgh\s+(issue|pr)\s+(comment|create)\b/, 'sending messages for the founder'],
-  [/\b(altool|notarytool|fastlane|transporter)\b|\bxcrun\s+altool\b/, 'App Store / TestFlight upload'],
-  [/\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r|-[a-z]*r\b|--recursive\b)|\bfind\b[^|;&]*\s-delete\b|\brsync\b[^|;&]*--delete|\bgit\s+(reset\s+--hard|clean\s+-[a-z]*f|push\s+--force|branch\s+-D)\b|\b(drop|truncate)\s+(table|database|schema)\b|\bdelete\s+from\b|\bfirestore:delete\b|\b(gsutil|gcloud\s+storage|aws\s+s3)\s+rm\b|\bdropdb\b/i, 'deleting data'],
-  [/api\.stripe\.com|\bstripe\s+(charges|payment|refunds|transfers|payouts)|\brevenuecat\b.*\b(grant|refund)\b/i, 'money'],
-  [/\bsecurity\s+(find|add|delete)-(generic|internet)-password\b|\bgcloud\s+auth\b|\bgh\s+auth\b|\bnpm\s+(login|token)\b/, 'passwords or keys'],
-  [/\|\s*(sudo\s+)?(ba|z|da|k)?sh\b|\b(ba|z)?sh\s+<\s*\(\s*(curl|wget)|\bbase64\s+(-d|--decode|-D)\b[^;&]*\|/, 'running downloaded or decoded code'],
-  // The page's buttons (approve, install, answer) are for the founder; a chat posting to them is answering for them.
-  [/\b(curl|wget|http|https|xh|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b[^|;&\n]*(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^|;&\n]*\/api\//i, 'pressing a button on the founder\'s war-room page'],
-  [/\bwar-room(\.mjs)?\b[^|;&\n]*\bengine\s+(install|uninstall|add|remove|run)\b/, 'making something start by itself on this computer'],
-  // Each morning run is a paid commander run; the watcher starts one a day by itself.
-  [/\bwar-room(\.mjs)?\b[^|;&\n]*\bmorning\b/, 'starting an extra paid commander run'],
-  [/\bschtasks\b|\b(Register|New)-ScheduledTask\b|Start Menu[\\/]+Programs[\\/]+Startup|CurrentVersion[\\/]+Run(Once)?\b/i, 'making something start by itself on this computer'],
-  [/\blaunchctl\s+(load|bootstrap|enable|submit|kickstart)\b|Library\/LaunchAgents\b|\bcrontab\b/, 'making something start by itself on this computer'],
-  [/\bclaude\s+(plugin|mcp)\s+(add|install)\b|\b(npx|bunx|pnpx|dlx|exec)\b[^|;&\n]*\bskills?\s+(add|a)\b/, 'installing a skill, plugin or connector'],
-];
-const RISKY_TOOL = /(deploy|publish|delete|remove|trash|send_message|send_email|charge|payment|refund|purchase|transfer)/i;
-
-function founderYesReason(input) {
-  const name = input.tool_name || '';
-  // Windows paths use backslashes; the checks below are written with forward slashes.
-  const raw = input.tool_input || {};
-  const ti = { ...raw, ...(raw.file_path ? { file_path: String(raw.file_path).replace(/\\/g, '/') } : {}), ...(raw.notebook_path ? { notebook_path: String(raw.notebook_path).replace(/\\/g, '/') } : {}) };
-  if (name === 'Bash') {
-    const command = ti.command || '';
-    // Looking at the war room's files is fine; only changing them needs the founder. A plain ls/cat/head/tail/grep/wc
-    // with no redirect, pipe, chain or substitution cannot change anything, and the per-user secret stays guarded.
-    const readOnly = /^\s*(ls|cat|head|tail|wc|grep)\b[^;&|<>`$\n]*$/.test(command) && !/\.config\/war-room|WAR_ROOM_HOME/.test(command);
-    const hit = FOUNDER_YES.find(([re, why]) => re.test(command) && !(readOnly && why.startsWith('approving, answering')));
-    return hit && hit[1];
-  }
-  if (['Write', 'Edit', 'MultiEdit'].includes(name) && /(^|\/)\.env(\.|$)|\.(pem|p8|p12|key)$/.test(ti.file_path || '')) return 'passwords or keys (secret file)';
-  if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(name) && /(^|\/)(\.warroom|\.config\/war-room)\//.test(ti.file_path || ti.notebook_path || '')) return 'editing war-room approvals, memory or settings by hand';
-  if (['Write', 'Edit', 'MultiEdit'].includes(name) && /\/Library\/LaunchAgents\/|Start Menu\/Programs\/Startup\//i.test(ti.file_path || '')) return 'making something start by itself on this computer';
-  if (['Write', 'Edit', 'MultiEdit'].includes(name) && /(^|\/)\.claude\/(settings[^/]*\.json|plugins\/)|(^|\/)hooks\/hooks\.json$/.test(ti.file_path || '')) return 'switching off or changing the safety guard';
-  if (name.startsWith('mcp__') && !name.includes('war-room') && RISKY_TOOL.test(name.split('__').pop())) return 'an outside action (send, delete, publish or pay)';
-  return null;
-}
 
 // One stale pass: post an inbox alert to the commander for every silent claimed task (deduped).
 function checkStale(store) {
@@ -88,18 +38,6 @@ function checkStale(store) {
     for (const t of stale) autoRemember(store, { kind: 'problem', text: `${t.id} (${t.title}): ${t.agent} went silent after claiming it at ${t.claimed}`, source: 'war-room-watch', tags: [t.id, t.agent] });
   }
   return posted;
-}
-
-// The founder's own notifier (e.g. a push script): "notifyCommand" in ~/.config/war-room/config.json, never in a
-// project, so a downloaded project cannot make the war room run its commands. It gets the message as one argument.
-function notify(store, message) {
-  console.error(`${now()} ${message}`);
-  const cmd = userConfig().notifyCommand;
-  if (!cmd) return;
-  if (process.platform === 'win32') {
-    const sh = shellSpec(`${cmd} "${String(message).replace(/["%\r\n]/g, ' ')}"`);
-    execFile(sh.bin, sh.args, sh.opts, () => {});
-  } else execFile('/bin/sh', ['-c', `${cmd} "$1"`, 'warroom-notify', message], () => {});
 }
 
 function bar(pct, width = 20) {
@@ -693,29 +631,13 @@ switch (cmd) {
     break;
   }
   case 'hook-guard': {
-    let input = {};
-    try { input = JSON.parse(fs.readFileSync(0, 'utf8') || '{}'); } catch {}
-    const reason = founderYesReason(input);
-    const command = input.tool_input?.command;
-    // Remote approvals (opt-in): the founder approves this exact command on the war-room page, once, within 30 min.
-    if (reason && command && store.exists() && store.config().remoteApprovals === true) {
-      const ok = consumeApproval(store, command);
-      const out = ok
-        ? { permissionDecision: 'allow', permissionDecisionReason: `War room: founder approved ${ok.id} for this exact command at ${ok.decided}.` }
-        : (() => { const ap = requestApproval(store, { agent: process.env.WAR_ROOM_AGENT || 'unnamed chat', action: `${reason}: ${command}`, why: 'Asked by the guard before running it.', command });
-          notify(store, `Approval needed: ${ap.id} ${reason}`);
-          return { permissionDecision: 'deny', permissionDecisionReason: `War room: ${reason} needs the founder's yes. Request ${ap.id} is on the war-room page. Do other work; call check_approval with id ${ap.id} and run the exact same command again once it says approved.` }; })();
-      process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...out } }));
-      break;
-    }
-    if (reason) {
-      process.stdout.write(JSON.stringify({ hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'ask',
-        permissionDecisionReason: `War room: ${reason} needs the founder's yes for this exact action.`,
-      } }));
-      if (store.exists()) store.log({ agent: process.env.WAR_ROOM_AGENT, event: 'founder_yes_asked', reason });
-    }
+    process.exitCode = await runGuardSafely(fs.readFileSync(0, 'utf8'), { store, notify });
+    break;
+  }
+  case 'access': {
+    // What a team member's background chat may do: war-room access [NAME read|edit|run]
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    try { console.log(setAccess(store, rest[0], rest[1])); } catch (e) { console.error(e.message); process.exitCode = 1; }
     break;
   }
   default:
@@ -729,6 +651,7 @@ switch (cmd) {
   spawn NAME [--agent claude|codex|gemini|cursor] [--model M]   start a worker chat
   runs                            worker chats and whether they still run
   debate "QUESTION" [--seats claude:opus,codex,gemini] [--rounds 2]   agents argue
+  access [NAME read|edit|run]     what each team member's background chat may do
   connect codex|gemini|cursor [--yes]   join another agent to the war room
   rules [--off sN --yes | --on sN --yes]   starter rules and your rules
   approve --id A --yes|--no · answer --question ID --text "..." · confirm-rules [--yes]

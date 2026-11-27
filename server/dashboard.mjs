@@ -6,7 +6,7 @@ import { recipes, runStatus, stoppedWorkers } from './agents.mjs';
 import { markdownToHtml, readShelfItem } from './shelf.mjs';
 import { ensureToday, studyProgress } from './tools.mjs';
 import { addonList } from './addons.mjs';
-import { chains, dutyOf, isReady, stepState } from './relay.mjs';
+import { blockedOnly, chains, dutyOf, isReady, stepState } from './relay.mjs';
 import { KNOWN, SKILL, SOURCE, installedSkills, skillUrl } from './skills.mjs';
 import path from 'node:path';
 import { changedFiles, projectMapSvg, scanProjectCached, teamMapSvg } from './map.mjs';
@@ -117,6 +117,8 @@ export function renderDashboard(store, { live = false } = {}) {
     if (open?.status === 'claimed') return ['working', 'Working on it', open];
     if (stopped.has(name)) return ['stopped', 'Stopped — the commander looks at why', open];
     if (open?.status === 'open' && !isReady(open, tasks)) return ['wait', `Waits for step ${open.after}`, open];
+    const holding = blockedOnly(name, tasks);
+    if (holding) return ['wait', `Waits for ${holding.agent}: same files`, open];
     if (team.find((x) => x.name === name)?.use === 'app' && open) return ['ready', 'Has work: open its app and say "stand by"', open];
     if (open) return ['ready', 'Has work, not started', open];
     if (ts.length && ts.every((t) => t.status === 'verified')) return ['done', 'All done', null];

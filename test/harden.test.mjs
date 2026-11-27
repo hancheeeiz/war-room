@@ -99,3 +99,37 @@ test('one chat per name: a second start is refused, even when several ask at onc
   assert.equal(outs.filter((o) => /already running/.test(o)).length, 3, outs.join('\n'));
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.warroom', 'runs.json'), 'utf8')).length, 1);
 });
+
+test('one writer per file: a second member waits, then gets the task when the first reports', async () => {
+  const { sameFiles, blocker } = await import(`${ROOT}/server/relay.mjs`);
+  const f = (...files) => ({ files });
+  for (const [a, b] of [['src/app', 'src/app/x.js'], ['./Src/App/', 'src/app'], ['src\\app\\x.js', 'src/app/x.js'], ['src/lib/../app', 'src/app'], ['src/**/*.ts', 'src/a.ts'], ['.', 'docs/a.md']]) assert.ok(sameFiles(f(a), f(b)), `${a} ~ ${b}`);
+  assert.ok(!sameFiles(f('src/app'), f('src/apple')));
+  assert.ok(sameFiles({ area: 'Frontend' }, { area: 'frontend' }));
+  assert.ok(!sameFiles({ area: 'frontend' }, { area: 'backend' }));
+  assert.equal(blocker({ agent: 'b', review: true, files: ['x'] }, [{ agent: 'a', status: 'claimed', files: ['x'] }]), null);
+
+  const dir = tmp('war-room-lock-');
+  const run = (...a) => spawnSync(process.execPath, [CLI, ...a], { cwd: dir, env: { ...env, WAR_ROOM_DIR: dir }, encoding: 'utf8' });
+  const call = (tool, args) => { const o = run('call', tool, JSON.stringify(args)); return o.stdout || o.stderr; };
+  run('init', '--project', 'demo');
+  const cfg = path.join(dir, '.warroom', 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg, 'utf8')), autoStartWorkers: false }));
+  call('propose_goal', { agent: 'commander', title: 'Ship', founderWords: 'ship' });
+  call('judge_goal', { agent: 'commander', goalId: 'g1', fit: 'core', cost: 'c', risks: 'r', strongerVersion: 'none', learn: [], recommendation: 'keep', reason: 'ok' });
+  call('decide_goal', { agent: 'commander', goalId: 'g1', choice: 'keep', founderWords: 'yes' });
+  call('set_plan', { agent: 'commander', goalId: 'g1', milestones: [{ title: 'A', win: 'w', checks: ['c1', 'c2', 'c3', 'c4'], due: '2099-12-31' }] });
+  for (const name of ['one', 'two']) call('hire', { agent: 'commander', name, role: name });
+  const make = (assignTo, extra) => call('create_task', { agent: 'commander', goalId: 'g1', title: `work ${assignTo}`, assignTo, doneCheck: 'x', ...extra });
+  make('one', { area: 'ui' });
+  make('two', { area: 'UI' });
+  assert.match(make('two', {}), /cannot keep another worker out/);
+  assert.match(call('get_task_packet', { agent: 'one' }), /t1/);
+  // "two" skips the held-back t2 and takes its unrelated t3.
+  assert.match(call('get_task_packet', { agent: 'two' }), /t3/);
+  call('report_done', { agent: 'two', taskId: 't3', summary: 's', evidence: 'e' });
+  assert.match(call('get_task_packet', { agent: 'two' }), /t2 waits: t1 \(one\)/);
+  call('report_done', { agent: 'one', taskId: 't1', summary: 's', evidence: 'e' });
+  assert.match(call('get_task_packet', { agent: 'two' }), /t2/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.warroom', 'tasks.json'), 'utf8'))[1].status, 'claimed');
+});

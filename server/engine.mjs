@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { commanderBrain, recipes, runStatus, startWorker, wakeCommander, which } from './agents.mjs';
 import { now, userDir } from './store.mjs';
-import { isReady, mayStartCli } from './relay.mjs';
+import { blockedOnly, isReady, mayStartCli } from './relay.mjs';
 import { searchCatalogue, suggest } from './skills.mjs';
 
 const today = () => now().slice(0, 10);
@@ -110,6 +110,8 @@ export function sweepWork(store) {
     if (!member) continue;
     seen.add(t.agent);
     if (running(t.agent) || !mayStartCli(store, t.agent)) continue;
+    const holding = blockedOnly(t.agent, tasks);
+    if (holding) { skipped.push({ task: t.id, why: `waits for ${holding.id} (${holding.agent}), same files` }); continue; }
     const tries = (t.autoStarts || []).filter((x) => x.startsWith(today())).length;
     if (tries >= perTask) { skipped.push({ task: t.id, why: `started ${tries} times today without a report` }); continue; }
     const bin = recipes()[member.use || 'claude']?.bin;

@@ -87,10 +87,47 @@ export function chains(tasks) {
   return out;
 }
 
+// ── One writer per file ──────────────────────────────
+// Paths are compared the way a Mac or Windows disk sees them: either slash, any letter case, "./" or "x/../" spelled
+// out, and a pattern counts as the folder before its first "*". An empty result means the whole project.
+export function plainPath(p) {
+  const out = [];
+  for (const part of String(p).replace(/\\/g, '/').toLowerCase().split('/')) {
+    if (/[*?[{]/.test(part)) break;
+    if (part === '..') out.pop(); else if (part && part !== '.') out.push(part);
+  }
+  return out.join('/');
+}
+
+const touches = (a, b) => a === '' || b === '' || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+
+export function sameFiles(a, b) {
+  const fa = (a.files || []).map(plainPath), fb = (b.files || []).map(plainPath);
+  if (fa.length && fb.length) return fa.some((x) => fb.some((y) => touches(x, y)));
+  return !!a.area && !!b.area && a.area.trim().toLowerCase() === b.area.trim().toLowerCase();
+}
+
+// The task another member is working on right now that shares files with this one. A review only reads.
+export function blocker(t, tasks) {
+  if (t.review) return null;
+  return tasks.find((x) => x.status === 'claimed' && !x.review && x.agent !== t.agent && sameFiles(t, x)) || null;
+}
+
+// For a member with nothing in hand: when every task it could take now is held back, the one holding back the first.
+export function blockedOnly(name, tasks) {
+  const mine = tasks.filter((t) => t.agent === name);
+  if (mine.some((t) => t.status === 'claimed')) return null;
+  const could = mine.filter((t) => t.status === 'rejected' || (t.status === 'open' && isReady(t, tasks)));
+  if (!could.length || could.some((t) => !blocker(t, tasks))) return null;
+  return blocker(could[0], tasks);
+}
+
 export function stepState(t, tasks) {
   if (t.status === 'verified') return ['done', 'Checked'];
   if (t.status === 'reported') return ['check', t.review ? 'Review done, commander checks' : 'Done, waiting for its check'];
   if (t.status === 'claimed') return ['working', 'Working'];
+  const held = ['open', 'rejected'].includes(t.status) && blocker(t, tasks);
+  if (held) return ['wait', `Waits: ${held.id} (${held.agent}) has the same files`];
   if (t.status === 'rejected') return ['back', t.sentBackBy ? `Sent back by ${t.sentBackBy}` : 'Sent back'];
   if (!isReady(t, tasks)) return ['wait', `Waits for ${t.after}`];
   return ['ready', 'Ready, not taken yet'];

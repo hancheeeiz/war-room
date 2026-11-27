@@ -12,7 +12,9 @@ Every background chat is started with one of three access levels:
 | `edit` | also change files (the default) | commander |
 | `run` | also run commands | only you: `war-room access NAME run` (signed, so a project file cannot fake it) |
 
-Only one background chat per name runs at a time: a second start is refused, even if the page, the engine and a chat ask at the same moment. `war-room access` lists them. The commander itself has `run`. Claude Code enforces all three levels. Codex enforces `read` (its read-only sandbox); its `edit` can still run commands inside its own sandbox. Gemini uses its plan and auto-edit modes (not tested with a real run). Cursor cannot be limited, so it starts only with `run`. Chats you open yourself in an app keep that app's permissions.
+Only one background chat per name runs at a time: a second start is refused, even if the page, the engine and a chat ask at the same moment. `war-room access` lists them.
+
+**One writer per file.** A member cannot take a task while another member is working on the same files or folders (or the same area, for tasks without a file list); it waits and starts when that work is reported. Name `files` or `area` on every task: a task with neither is not protected. This guides the war room's own task hand-out; it does not stop a chat from editing a file outside its task. The commander itself has `run`. Claude Code enforces all three levels. Codex enforces `read` (its read-only sandbox); its `edit` can still run commands inside its own sandbox. Gemini uses its plan and auto-edit modes (not tested with a real run). Cursor cannot be limited, so it starts only with `run`. Chats you open yourself in an app keep that app's permissions.
 
 ## The guard
 

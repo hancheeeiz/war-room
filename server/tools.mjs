@@ -3,7 +3,7 @@ import path from 'node:path';
 import { ADDON_NAME, LOCAL_URL, addonInForce, addonList } from './addons.mjs';
 import { createDebate, launchDebate, runStatus, startWorker, stoppedWorkers } from './agents.mjs';
 import { inboxCounts, oldOpenWork, outsideTeam, tidyInbox } from './engine.mjs';
-import { beat, isReady, mayStartCli, resultsText } from './relay.mjs';
+import { beat, blockedOnly, blocker, isReady, mayStartCli, resultsText, sameFiles } from './relay.mjs';
 import { installedSkills, matchSkills, searchCatalogue, skillsText, suggest } from './skills.mjs';
 import { firstHeading, readShelfItem, resolveShelfPath } from './shelf.mjs';
 import { starterRules } from './starter-rules.mjs';
@@ -692,7 +692,7 @@ export const TOOLS = [
       if (missing.length) throw new Refused(`Not installed: ${missing.join(', ')}. find_skills shows what is installed and can suggest new ones.`);
       const skills = named.length ? named.map(({ name, file }) => ({ name, file })) : matchSkills(`${a.title} ${(a.tags || []).join(' ')} ${member?.role || ''} ${member?.does || ''}`, installed).map(({ name, file, description, strong }) => ({ name, file, ...(strong ? {} : { strong: false, description: description.slice(0, 140) }) }));
       const out = store.update('tasks', (tasks) => {
-        const clash = (a.files || []).length && tasks.find((t) => !['verified'].includes(t.status) && t.agent !== a.assignTo && (t.files || []).some((f) => a.files.some((g) => f.startsWith(g) || g.startsWith(f))));
+        const clash = (a.files || []).length && tasks.find((t) => !['verified'].includes(t.status) && t.agent !== a.assignTo && (t.files || []).length && sameFiles(t, a));
         if (clash) throw new Refused(`${clash.agent} is already working on overlapping files (${clash.id}). One writer per file: wait or pick other files.`);
         if (a.after && !tasks.some((x) => x.id === a.after)) throw new Refused(`No task ${a.after} to wait for.`);
         if (a.review && !a.after) throw new Refused('A review step needs after: the task it reviews.');
@@ -703,7 +703,8 @@ export const TOOLS = [
         const missedMemory = relevantMemory(memory, `${t.title} ${t.doneCheck} ${(t.tags || []).join(' ')}`, 6, true).filter((m) => !t.rules.includes(m.id)).map(({ id, kind, date, text }) => ({ id, kind, date, text }));
         return { task: t, missedMemory, remind: missedMemory.length ? 'Memory items that match this task but are not in its rules — add any that apply (they also ride along in the packet automatically).' : undefined };
       });
-      return { ...out, worker: autoStart(store, out.task) };
+      const unguarded = !a.review && !out.task.files.length && !out.task.area ? 'No files or area on this task, so the war room cannot keep another worker out of the same files. Name them.' : undefined;
+      return { ...out, ...(unguarded ? { warning: unguarded } : {}), worker: autoStart(store, out.task) };
     },
   },
   {
@@ -756,7 +757,7 @@ export const TOOLS = [
       store.update('messages', (messages) => {
         messages.push({ id: messages.length + 1, from: a.agent, to: store.config().commander, kind: 'handoff', text: `Task ${t.id} (${t.title}) reported done: ${a.summary}. Evidence: ${a.evidence}${a.notVerified ? `. Not verified by the worker: ${a.notVerified}` : ''}`, date: now(), open: true });
       });
-      const relay = t.review ? reviewDone(store, t, a) : startNextSteps(store, t.id).map((r) => r.name);
+      const relay = t.review ? reviewDone(store, t, a) : [...startNextSteps(store, t.id).map((r) => r.name), ...startFreed(store, t)];
       return { ok: true, next: t.review ? relay : 'The commander will re-check your evidence before it counts. If you are on duty, call wait_for_work again now.', ...(t.review ? {} : relay.length ? { started: relay } : {}) };
     },
   },
@@ -822,6 +823,8 @@ export const TOOLS = [
 // member's chat is already running and will pick it up). Turn off with "autoStartWorkers": false in config.json.
 function autoStart(store, t) {
   if (store.config().autoStartWorkers === false || (t.after && !isReady(t, store.read('tasks')))) return undefined;
+  const holding = blockedOnly(t.agent, store.read('tasks'));
+  if (holding) return `Not started yet: ${t.agent} waits for ${holding.id} (${holding.agent}), which is working on the same files. It starts when that is reported.`;
   const member = store.read('team').find((m) => m.name === t.agent);
   if (!member) return `Not started: ${t.agent} is not on the team. hire it, then start_worker, so the work does not sit open.`;
   if (!mayStartCli(store, t.agent)) return member.use === 'app' ? `${t.agent} works in an app the founder opens; it takes this from wait_for_work.` : `${t.agent} is on duty; it takes this from wait_for_work.`;
@@ -851,8 +854,15 @@ export function claimNext(store, agent, { onDuty = false } = {}) {
   const goals = store.read('goals');
   const memory = store.read('memory');
   return store.update('tasks', (tasks) => {
-    const t = tasks.find((x) => x.agent === agent && ['claimed', 'rejected'].includes(x.status)) || tasks.find((x) => x.agent === agent && x.status === 'open' && isReady(x, tasks));
+    // The task in hand stays. Otherwise sent-back work first, then the next ready one, skipping any whose files
+    // another member is working on. This runs under the lock, so two chats cannot both take the same files.
+    const could = [...tasks.filter((x) => x.agent === agent && x.status === 'rejected'), ...tasks.filter((x) => x.agent === agent && x.status === 'open' && isReady(x, tasks))];
+    const t = tasks.find((x) => x.agent === agent && x.status === 'claimed') || could.find((x) => !blocker(x, tasks));
     if (!t) {
+      if (could.length) {
+        const b = blocker(could[0], tasks);
+        return { task: null, text: `Your task ${could[0].id} waits: ${b.id} (${b.agent}) is working on the same files. Do not edit them. Stop now (or, on duty, call wait_for_work); it comes to you when ${b.id} is reported. If ${b.agent} is stuck, post_message the commander.` };
+      }
       const waits = tasks.find((x) => x.agent === agent && x.status === 'open');
       return { task: null, text: waits ? `Your task ${waits.id} waits for ${waits.after} ${waits.review ? 'to report' : 'to be verified'} first. Stop now (or, on duty, call wait_for_work); it comes to you when it is your turn.` : 'No task for you. Wait for the commander or post_message to it.' };
     }
@@ -939,6 +949,20 @@ function workFor(store, agent) {
   return `${next.fresh ? 'New task for you.' : 'You still hold this task.'}\n${next.text}\nWhen it is done: report_done (with files), then call wait_for_work again.`;
 }
 
+// A report frees its files: start the members who were only waiting for them, one writer at a time.
+function startFreed(store, done) {
+  const started = [];
+  const taken = [];
+  const tasks = store.read('tasks');
+  for (const t of tasks) {
+    if (t.agent === done.agent || !['open', 'rejected'].includes(t.status) || !isReady(t, tasks) || t.review || !sameFiles(t, done)) continue;
+    if (blocker(t, tasks) || taken.some((x) => x.agent === t.agent || sameFiles(x, t))) continue;
+    taken.push(t);
+    if (/^Started /.test(autoStart(store, t) || '')) started.push(t.agent);
+  }
+  return started;
+}
+
 // Step-by-step chains: once a task is verified, start the workers whose task was waiting for it.
 export function startNextSteps(store, doneId) {
   const team = store.read('team');
@@ -950,7 +974,7 @@ export function startNextSteps(store, doneId) {
     const member = team.find((m) => m.name === t.agent);
     const last = runs.filter((r) => r.name === t.agent).pop();
     if (last && runStatus(last) === 'running') continue;
-    if (!mayStartCli(store, t.agent)) continue;
+    if (!mayStartCli(store, t.agent) || blockedOnly(t.agent, store.read('tasks'))) continue;
     try {
       started.push(startWorker(store, { name: t.agent, agent: member?.use || last?.agent || 'claude', model: member?.model || last?.model }));
     } catch (e) {

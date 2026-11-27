@@ -108,4 +108,5 @@ The memory lives in files, not in any chat, so a new chat can take over as comma
 ## Showing progress
 - `war_room_status` gives the bars, today's goals, every agent's task and the last 10 events. Show the founder the bars and what needs them, never raw logs.
 - The page: if it is not running, start it yourself in the background with `node "${CLAUDE_PLUGIN_ROOT}/bin/war-room.mjs" up` (`--phone` for a phone link) and give the founder the link. `war-room doctor` shows what is installed, connected and running.
+- Keeping it running with no chat open is the founder's choice, per war room: `war-room keep` shows the state, `keep --yes` / `keep --no` changes it. Only for this project's war room.
 - Text view: `node "${CLAUDE_PLUGIN_ROOT}/bin/war-room.mjs" status`.

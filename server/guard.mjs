@@ -32,6 +32,7 @@ const FOUNDER_YES = [
   // The page's buttons (approve, install, answer) are for the founder; a chat posting to them is answering for them.
   [/\b(curl|wget|http|https|xh|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b[^|;&\n]*(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^|;&\n]*\/api\//i, 'pressing a button on the founder\'s war-room page'],
   [/\bwar-room(\.mjs)?\b[^|;&\n]*\bengine\s+(install|uninstall|add|remove|run)\b/, 'making something start by itself on this computer'],
+  [/\bwar-room(\.mjs)?\b[^|;&\n]*\bkeep\s+(\S+\s+)*--yes\b/, 'making something start by itself on this computer'],
   // Each morning run is a paid commander run; the watcher starts one a day by itself.
   [/\bwar-room(\.mjs)?\b[^|;&\n]*\bmorning\b/, 'starting an extra paid commander run'],
   [/\bschtasks\b|\b(Register|New)-ScheduledTask\b|Start Menu[\\/]+Programs[\\/]+Startup|CurrentVersion[\\/]+Run(Once)?\b/i, 'making something start by itself on this computer'],

@@ -133,3 +133,24 @@ test('one writer per file: a second member waits, then gets the task when the fi
   assert.match(call('get_task_packet', { agent: 'two' }), /t2/);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.warroom', 'tasks.json'), 'utf8'))[1].status, 'claimed');
 });
+
+test('keep running is asked per war room and only adds that one', () => {
+  const home = tmp('war-room-keephome-');
+  const a = tmp('war-room-keepa-'), b = tmp('war-room-keepb-');
+  const e = (dir) => ({ ...env, HOME: home, WAR_ROOM_HOME: path.join(home, '.config', 'war-room'), WAR_ROOM_DIR: dir });
+  const run = (dir, ...args) => spawnSync(process.execPath, [CLI, ...args], { cwd: dir, env: e(dir), encoding: 'utf8' });
+  run(a, 'init', '--project', 'a'); run(b, 'init', '--project', 'b');
+  assert.match(run(a, 'doctor').stdout, /Keep this war room running: not asked/);
+  assert.match(run(b, 'keep', '--no').stdout, /only while you have it open/);
+  assert.match(run(b, 'keep').stdout, /Keep running: no/);
+  if (process.platform === 'darwin') {
+    assert.match(run(a, 'keep', '--yes', '--no-load').stdout, /Only this one was added/);
+    assert.match(run(a, 'keep').stdout, /Keep running: on/);
+    const list = JSON.parse(fs.readFileSync(path.join(home, '.config', 'war-room', 'projects.json'), 'utf8'));
+    assert.deepEqual(list.map((p) => path.basename(p.dir)), [path.basename(a)]);
+    run(a, 'keep', '--no');
+    assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.config', 'war-room', 'projects.json'), 'utf8')).length, 0);
+  }
+  assert.match(bash('node /x/bin/war-room.mjs keep --yes'), /start by itself/);
+  assert.equal(bash('node /x/bin/war-room.mjs keep --no', a), '');
+});

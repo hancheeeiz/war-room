@@ -311,6 +311,14 @@ export function engineRunning() {
   try { const pid = Number(fs.readFileSync(enginePidFile(), 'utf8')); process.kill(pid, 0); return pid; } catch (e) { return e.code === 'EPERM' ? -1 : null; }
 }
 
+// Whether this one war room is kept running from login: "on", "no" (the founder declined) or "not asked".
+export function keepState(store) {
+  const dir = path.resolve(path.dirname(store.root));
+  const item = loginItem();
+  if (item && fs.existsSync(item.file) && registered().some((p) => path.resolve(p.dir) === dir)) return 'on';
+  return store.config().keepRunning === false ? 'no' : 'not asked';
+}
+
 export const LABEL = 'com.war-room.engine';
 export const plistPath = () => path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
 

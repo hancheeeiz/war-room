@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { Store, now, sign, userConfig, userDir } from '../server/store.mjs';
 import { addonList, approveAddon, startAddons } from '../server/addons.mjs';
 import { decideSkill, installedSkills } from '../server/skills.mjs';
-import { LABEL, autoFindSkills, commanderCall, enginePidFile, enginePath, engineRunning, loginItem, morningRun, vbsText, plistPath, plistText, register, registered, sweepWork, tidyInbox, unregister } from '../server/engine.mjs';
+import { LABEL, autoFindSkills, commanderCall, keepState, enginePidFile, enginePath, engineRunning, loginItem, morningRun, vbsText, plistPath, plistText, register, registered, sweepWork, tidyInbox, unregister } from '../server/engine.mjs';
 import { resumeAfterApproval, setAccess, shellSpec, wakeCommander, wakeMember } from '../server/agents.mjs';
 import { runGuardSafely } from '../server/guard.mjs';
 import { notify } from '../server/notify.mjs';
@@ -348,6 +348,7 @@ switch (cmd) {
     if (store.exists()) {
       let up = null;
       try { up = JSON.parse(fs.readFileSync(`${store.root}/up.json`, 'utf8')); process.kill(up.pid, 0); } catch { up = null; }
+      console.log(`Keep this war room running: ${keepState(store)}`);
       console.log(`Page: ${up ? `running at http://127.0.0.1:${up.port}/${up.lan ? ' (phone link on)' : ''}` : 'not running → war-room up   (add --phone for your phone)'}`);
       const runs = store.read('runs').filter((r) => runStatus(r) === 'running');
       console.log(`Worker chats running: ${runs.length ? runs.map((r) => r.name).join(', ') : 'none'}`);
@@ -448,6 +449,27 @@ switch (cmd) {
     if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
     await startWatch();
     break;
+  case 'keep': {
+    // Keep THIS war room (and no other) running when no chat is open: war-room keep [--yes|--no]
+    if (!store.exists()) { console.log('No war room here. Start one with /war-room.'); break; }
+    const dir = path.dirname(path.resolve(store.root));
+    const setKeep = (v) => fs.writeFileSync(`${store.root}/config.json`, JSON.stringify({ ...store.config(), keepRunning: v }, null, 2));
+    if (rest.includes('--yes')) {
+      setKeep(true);
+      // The first war room on this computer sets up the login item; later ones only join its list.
+      const item = loginItem();
+      const ready = item && fs.existsSync(item.file) && engineRunning() && fs.readFileSync(item.file, 'utf8').includes(path.basename(path.resolve(process.argv[1])));
+      const { spawnSync } = await import('node:child_process');
+      const r = spawnSync(process.execPath, [path.resolve(process.argv[1]), 'engine', ready ? 'add' : 'install', '--project', dir, ...(rest.includes('--no-load') ? ['--no-load'] : [])], { stdio: 'inherit' });
+      process.exitCode = r.status || 0;
+      if (!process.exitCode) console.log('This war room is kept running. Only this one was added.');
+    } else if (rest.includes('--no')) {
+      setKeep(false);
+      unregister(dir);
+      console.log('This war room runs only while you have it open. Other war rooms are unchanged.');
+    } else console.log(`Keep running: ${keepState(store)}`);
+    break;
+  }
   case 'engine': {
     // The always-on engine. install/uninstall need the founder (the guard asks); run is what macOS starts at login.
     const sub = rest[0] || 'status';
@@ -643,6 +665,7 @@ switch (cmd) {
   default:
     console.log(`war-room <command>
   up [--phone] [--no-open]        start the page and the watcher (one command)
+  keep [--yes|--no]               keep this war room (only) running when no chat is open (asks first)
   engine install [--project DIR]  keep your war rooms running in the background, from login (asks first)
   engine status | add | remove | uninstall   which war rooms the engine keeps running
   morning                         wake the commander now to work through what needs it
